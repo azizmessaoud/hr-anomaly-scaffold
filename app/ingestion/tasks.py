@@ -83,7 +83,7 @@ def _determine_extraction_status(
     if not result.succeeded or result.record is None:
         return RecStatus.RED
     record = result.record
-    if result.confidence < threshold:
+    if result.source == "docling" and result.confidence < threshold:
         return RecStatus.AMBER
     if any(
         flag.moteur == result.source and "manquant" in flag.detail
