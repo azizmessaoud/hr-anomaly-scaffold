@@ -1,0 +1,147 @@
+from __future__ import annotations
+
+import json
+import logging
+from pathlib import Path
+
+from app.core.config import ExtractPipelineConfig
+from app.ingestion.extraction_result import (
+    ERR_VLM_INVALID_NUMERIC,
+    ERR_VLM_MALFORMED_JSON,
+    ERR_VLM_MISSING_REQUIRED_FIELD,
+    ERR_VLM_NOT_OBJECT,
+    ExtractionResult,
+    flag_vlm_fallback,
+)
+from app.ingestion.ollama_client import extract_hr_fields
+from app.ingestion.schemas import Flag, HRRecord
+
+logger = logging.getLogger(__name__)
+
+_REQUIRED_FIELDS = ("nom", "cin", "cnss")
+
+_EXTRACTION_PROMPT = (
+    "Tu es un extracteur de documents RH. "
+    "Retourne UNIQUEMENT un objet JSON valide, sans texte additionnel. "
+    "Champs: nom, prenom, cin, cnss, date_embauche (YYYY-MM-DD), "
+    "salaire_brut (nombre), poste, departement. "
+    "Si un champ est absent, mets null."
+)
+
+
+def _parse_vlm_payload(payload: str) -> dict[str, object]:
+    try:
+        data = json.loads(payload)
+    except json.JSONDecodeError as exc:
+        raise ValueError(f"Reponse VLM non JSON: {payload[:200]}") from exc
+    if not isinstance(data, dict):
+        raise ValueError("Reponse VLM doit etre un objet JSON")
+    return data
+
+
+def _optional_str(value: object) -> str | None:
+    if value is None:
+        return None
+    if isinstance(value, str):
+        stripped = value.strip()
+        return stripped or None
+    return str(value)
+
+
+def _optional_float(value: object) -> float | None:
+    if value is None:
+        return None
+    if isinstance(value, (int, float)):
+        return float(value)
+    if isinstance(value, str):
+        normalized = value.strip().replace(",", ".")
+        if not normalized:
+            return None
+        return float(normalized)
+    raise ValueError(f"Valeur numerique invalide: {value!r}")
+
+
+def _coerce_record(
+    data: dict[str, object],
+    *,
+    doc_id: str,
+    revision: int,
+    config: ExtractPipelineConfig,
+) -> tuple[HRRecord, list[str]]:
+    flags: list[Flag] = []
+    record = HRRecord(
+        id=doc_id,
+        revision=revision,
+        nom=_optional_str(data.get("nom")),
+        prenom=_optional_str(data.get("prenom")),
+        cin=_optional_str(data.get("cin")),
+        cnss=_optional_str(data.get("cnss")),
+        date_embauche=_optional_str(data.get("date_embauche")),
+        salaire_brut=_optional_float(data.get("salaire_brut")),
+        poste=_optional_str(data.get("poste")),
+        departement=_optional_str(data.get("departement")),
+        confiance=config.vlm_default_confidence,
+        flags=flags,
+    )
+    missing = [name for name in _REQUIRED_FIELDS if getattr(record, name) is None]
+    if missing:
+        flags.append(
+            Flag(
+                moteur="vlm",
+                detail="Champ(s) manquant(s) apres extraction VLM",
+                score=config.vlm_default_confidence,
+            )
+        )
+    return record, missing
+
+
+def _failure(*, source_msg: str, error_code: str) -> ExtractionResult:
+    logger.warning("VLM extraction failed: %s", source_msg)
+    return ExtractionResult(
+        record=None,
+        confidence=0.0,
+        source="vlm",
+        flags=(flag_vlm_fallback(),),
+        erreur_traitement=error_code,
+    )
+
+
+def extract_with_vlm(
+    document_path: Path,
+    *,
+    doc_id: str,
+    revision: int = 0,
+    config: ExtractPipelineConfig,
+) -> ExtractionResult:
+    try:
+        raw = extract_hr_fields(str(document_path), _EXTRACTION_PROMPT, config)
+    except Exception as exc:
+        return _failure(source_msg=str(exc), error_code=ERR_VLM_MALFORMED_JSON)
+
+    try:
+        data = _parse_vlm_payload(raw)
+    except ValueError as exc:
+        if "objet JSON" in str(exc):
+            return _failure(source_msg=str(exc), error_code=ERR_VLM_NOT_OBJECT)
+        return _failure(source_msg=str(exc), error_code=ERR_VLM_MALFORMED_JSON)
+
+    try:
+        record, missing = _coerce_record(data, doc_id=doc_id, revision=revision, config=config)
+    except ValueError as exc:
+        return _failure(source_msg=str(exc), error_code=ERR_VLM_INVALID_NUMERIC)
+
+    if missing:
+        return ExtractionResult(
+            record=None,
+            confidence=config.vlm_default_confidence,
+            source="vlm",
+            flags=(flag_vlm_fallback(),),
+            erreur_traitement=f"{ERR_VLM_MISSING_REQUIRED_FIELD}:{','.join(missing)}",
+        )
+
+    return ExtractionResult(
+        record=record,
+        confidence=config.vlm_default_confidence,
+        source="vlm",
+        flags=(flag_vlm_fallback(),),
+    )
