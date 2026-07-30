@@ -11,11 +11,11 @@ class Settings(BaseSettings):
     docling_confidence_threshold: float = 0.75
     docling_confidence_max: float = 1.0
 
-    ollama_base_url: str = "http://localhost:11434"
-    ollama_model: str = "qwen2.5vl:7b"
+    ollama_base_url: str = "http://127.0.0.1:11434"
+    ollama_model: str = "richardyoung/smolvlm2-2.2b-instruct:q4_k_m"
     ollama_timeout_seconds: int = 120
 
-    vlm_default_confidence: float = 0.5
+    vlm_default_confidence: float = 0.6
 
     celery_broker_url: str = "redis://localhost:6379/0"
     celery_result_backend: str = "redis://localhost:6379/1"
