@@ -16,14 +16,17 @@
 ### Install & Run
 
 ```bash
+# Activate the virtual environment
+source .venv/bin/activate
+
 # Install dependencies
 pip install -e .
 
 # Start Ollama (if not already running)
 ollama serve
 
-# Run the pipeline
-uvicorn app.main:create_app --factory --host 0.0.0.0 --port 8000
+# Run the pipeline (use venv python to avoid system package conflicts)
+python -m uvicorn app.main:create_app --factory --host 0.0.0.0 --port 8000
 ```
 
 ### Upload a Document
@@ -62,7 +65,22 @@ pytest -q
 
 All 74 tests should pass.
 
-## Constraints
+## Troubleshooting
+
+### `ModuleNotFoundError: No module named 'fastapi'` when running `uvicorn`
+
+This means you are using the system `uvicorn` (at `/usr/bin/uvicorn`) which runs on system Python and doesn't have fastapi installed. 
+
+**Fix:** Always use the venv's python to run uvicorn:
+```bash
+source .venv/bin/activate
+python -m uvicorn app.main:create_app --factory --host 0.0.0.0 --port 8000
+```
+
+Or without activation:
+```bash
+.venv/bin/python -m uvicorn app.main:create_app --factory --host 0.0.0.0 --port 8000
+```
 
 - **No cloud LLM calls on real data** — VLM runs locally via Ollama only
 - **Human-in-the-loop** — no record reaches `approved` without explicit RH validation
