@@ -1,8 +1,10 @@
 # Domain Glossary — HR Anomaly Detection Pipeline
 
-## ExtractPipelineConfig
+## VLM Model Selection
 
-A frozen Pydantic model (`app/core/config.py`) that captures all extractor-specific configuration parameters:
+The default VLM model is **SmolVLM2** (`richardyoung/smolvlm2-2.2b-instruct:q4_k_m`), running locally via Ollama on the Windows host at `http://127.0.0.1:11434`.
+
+Chosen over alternatives (Unlimited-OCR, MiniCPM-V, Granite) because it runs on CPU-only hardware, integrates cleanly with Docling for fallback, and is sufficient for 1–5-page HR documents. See `docs/model_selection.md` for the ADR.
 
 | Field | Description |
 |---|---|
@@ -10,9 +12,7 @@ A frozen Pydantic model (`app/core/config.py`) that captures all extractor-speci
 | `ollama_base_url` | Base URL for the local Ollama VLM server |
 | `ollama_model` | Model name served by Ollama |
 | `ollama_timeout_seconds` | HTTP timeout for Ollama calls |
-| `vlm_default_confidence` | Default confidence score assigned to VLM-extracted records |
-
-Constructed from `Settings` via `make_extract_pipeline_config()`. Never pulls `Settings()` inside extractors — all extractor-specific config flows through this object explicitly (candidate 3 fix).
+| `vlm_default_confidence` | Default confidence score assigned to VLM-extracted records (0.6) |
 
 ## Status Axes
 
