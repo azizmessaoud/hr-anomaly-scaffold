@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import logging
+import tempfile
 from pathlib import Path
 
 from app.core.config import ExtractPipelineConfig
@@ -27,6 +28,35 @@ _EXTRACTION_PROMPT = (
     "salaire_brut (nombre), poste, departement. "
     "Si un champ est absent, mets null."
 )
+
+
+def _pdf_to_image(pdf_path: Path) -> Path | None:
+    """Render the first page of a PDF to a temp PNG image.
+
+    Returns the path to the temp PNG on success, or None if the
+    PDF cannot be rendered with the available tooling.
+
+    Uses pypdfium2 (already in the dependency tree via docling) for
+    PDF rasterisation — Pillow cannot open PDFs directly, and we are
+    not permitted to install PyMuPDF / pdf2image / pdftoppm.
+    """
+    try:
+        import pypdfium2 as pdfium
+    except ImportError:
+        return None
+    try:
+        pdf = pdfium.PdfDocument(str(pdf_path))
+        if len(pdf) == 0:
+            return None
+        pil_img = pdf[0].render(scale=1).to_pil()
+    except Exception:
+        return None
+    tmp = Path(tempfile.mkstemp(suffix=".png")[1])
+    try:
+        pil_img.save(tmp, format="PNG")
+    except Exception:
+        return None
+    return tmp
 
 
 def _parse_vlm_payload(payload: str) -> dict[str, object]:
@@ -113,10 +143,26 @@ def extract_with_vlm(
     revision: int = 0,
     config: ExtractPipelineConfig,
 ) -> ExtractionResult:
+    image_path: str
+    tmp_image: Path | None = None
+    if document_path.suffix.lower() == ".pdf":
+        converted = _pdf_to_image(document_path)
+        if converted is None:
+            return _failure(
+                source_msg="PDF requires image conversion for VLM fallback; install PyMuPDF or pdf2image",
+                error_code=ERR_VLM_MALFORMED_JSON,
+            )
+        tmp_image = converted
+        image_path = str(tmp_image)
+    else:
+        image_path = str(document_path)
     try:
-        raw = extract_hr_fields(str(document_path), _EXTRACTION_PROMPT, config)
+        raw = extract_hr_fields(image_path, _EXTRACTION_PROMPT, config)
     except Exception as exc:
         return _failure(source_msg=str(exc), error_code=ERR_VLM_MALFORMED_JSON)
+    finally:
+        if tmp_image is not None and tmp_image.exists():
+            tmp_image.unlink()
 
     try:
         data = _parse_vlm_payload(raw)

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import base64
 import logging
 
 import httpx
@@ -14,6 +15,9 @@ def extract_hr_fields(
     prompt: str,
     config: ExtractPipelineConfig,
 ) -> str:
+    with open(image_path, "rb") as f:
+        image_bytes = f.read()
+    b64_image = base64.b64encode(image_bytes).decode("utf-8")
     url = f"{config.ollama_base_url}/api/chat"
     payload = {
         "model": config.ollama_model,
@@ -22,7 +26,7 @@ def extract_hr_fields(
             {
                 "role": "user",
                 "content": prompt,
-                "images": [image_path],
+                "images": [b64_image],
             }
         ],
     }

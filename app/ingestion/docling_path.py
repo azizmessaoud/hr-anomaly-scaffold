@@ -37,7 +37,11 @@ def run_docling(document_path: Path) -> DoclingResult:
     converter = DocumentConverter()
     result = converter.convert(document_path)
     md = result.document.export_to_markdown()
-    confidence = float(getattr(result, "confidence", 0.9))
+    raw_conf = getattr(result, "confidence", 0.9)
+    if isinstance(raw_conf, (int, float)):
+        confidence = float(raw_conf)
+    else:
+        confidence = float(getattr(raw_conf, "value", 0.9))
     return DoclingResult(markdown=md, confidence=confidence)
 
 
