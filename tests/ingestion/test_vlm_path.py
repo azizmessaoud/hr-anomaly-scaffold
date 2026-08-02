@@ -3,6 +3,7 @@ from __future__ import annotations
 from pathlib import Path
 from unittest.mock import patch
 
+import httpx
 import pytest
 
 from app.core.config import ExtractPipelineConfig
@@ -11,6 +12,7 @@ from app.ingestion.extraction_result import (
     ERR_VLM_MALFORMED_JSON,
     ERR_VLM_MISSING_REQUIRED_FIELD,
     ERR_VLM_NOT_OBJECT,
+    ERR_VLM_UNREACHABLE,
 )
 from app.ingestion.vlm_path import extract_with_vlm
 
@@ -112,6 +114,18 @@ def test_extract_with_vlm_ollama_client_failure_returns_red(fake_image: Path, te
     assert result.succeeded is False
     assert result.record is None
     assert result.erreur_traitement == ERR_VLM_MALFORMED_JSON
+
+
+def test_extract_with_vlm_transport_failure_returns_unreachable(fake_image: Path, test_config: ExtractPipelineConfig):
+    with patch(
+        "app.ingestion.vlm_path.extract_hr_fields",
+        side_effect=httpx.ConnectError("connection refused"),
+    ):
+        result = extract_with_vlm(fake_image, doc_id="doc-x", config=test_config)
+
+    assert result.succeeded is False
+    assert result.record is None
+    assert result.erreur_traitement == ERR_VLM_UNREACHABLE
 
 
 def test_extract_with_vlm_invalid_numeric_returns_red(fake_image: Path, test_config: ExtractPipelineConfig):

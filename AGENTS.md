@@ -62,3 +62,45 @@ Cette commande ne doit rien retourner en dehors de commentaires expliquant expli
 - Ne jamais committer de document RH réel (CIN/CNSS/salaire réels) dans le dépôt, même pour un test.
 - Ne jamais appeler un service cloud sur des données non synthétiques.
 - Ne jamais court-circuiter la revue humaine pour "accélérer la démo".
+# AGENTS.md — HR Anomaly Scaffold
+
+## Project goal
+A local, secure AI pipeline for detecting anomalies in HR files before integration.
+
+## Canonical documents
+- `docs/architecture.md` = source of truth for architecture
+- `CONTEXT.md` = glossary and current domain decisions
+
+## Runtime truth
+- Development happens from Windows PowerShell, but the backend runs inside WSL.
+- The Python environment is inside WSL at `.venv`.
+- Standard backend startup:
+  - `wsl`
+  - `source .venv/bin/activate`
+  - `python -m uvicorn app.main:create_app --factory --host 0.0.0.0 --port 8000`
+
+## Local model setup
+- Ollama is installed on Windows host.
+- vLLM may also be installed on Windows host.
+- WSL may not reliably reach `127.0.0.1` on Windows host.
+- If model calls fail, first verify host binding, firewall, and Windows host IP routing.
+- Do not replace local model usage with cloud APIs.
+
+## Current code seams
+- `app/main.py` — app factory seam
+- `app/core/config.py` — config seam
+- `app/ingestion/ollama_client.py` — single seam for local model calls
+- `app/ingestion/tasks.py` — orchestration seam for ingestion
+- `app/pipeline/status_composition.py` — record status composition seam
+
+## Debugging policy
+- Reproduce first.
+- Patch the narrowest seam.
+- Add a regression test.
+- Prefer diagnosis over refactors.
+- Do not expand scope without saying so.
+
+## Security constraints
+- Never send real HR data to cloud models or cloud OCR.
+- Never bypass human review.
+- Never commit real HR documents.

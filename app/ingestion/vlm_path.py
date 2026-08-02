@@ -5,12 +5,15 @@ import logging
 import tempfile
 from pathlib import Path
 
+import httpx
+
 from app.core.config import ExtractPipelineConfig
 from app.ingestion.extraction_result import (
     ERR_VLM_INVALID_NUMERIC,
     ERR_VLM_MALFORMED_JSON,
     ERR_VLM_MISSING_REQUIRED_FIELD,
     ERR_VLM_NOT_OBJECT,
+    ERR_VLM_UNREACHABLE,
     ExtractionResult,
     flag_vlm_fallback,
 )
@@ -158,6 +161,8 @@ def extract_with_vlm(
         image_path = str(document_path)
     try:
         raw = extract_hr_fields(image_path, _EXTRACTION_PROMPT, config)
+    except (httpx.ConnectError, httpx.TimeoutException) as exc:
+        return _failure(source_msg=str(exc), error_code=ERR_VLM_UNREACHABLE)
     except Exception as exc:
         return _failure(source_msg=str(exc), error_code=ERR_VLM_MALFORMED_JSON)
     finally:
