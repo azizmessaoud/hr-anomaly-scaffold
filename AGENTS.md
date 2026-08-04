@@ -69,6 +69,7 @@ A local, secure AI pipeline for detecting anomalies in HR files before integrati
 
 ## Canonical documents
 - `docs/architecture.md` = source of truth for architecture
+- `docs/runtime.md` = canonical runtime contracts (modes, endpoints, dependencies, networking). **Start here for any question about "is X required or optional?" or "what happens when Y is down?"**
 - `CONTEXT.md` = glossary and current domain decisions
 
 ## Runtime truth
@@ -78,6 +79,9 @@ A local, secure AI pipeline for detecting anomalies in HR files before integrati
   - `wsl`
   - `source .venv/bin/activate`
   - `python -m uvicorn app.main:create_app --factory --host 0.0.0.0 --port 8000`
+- For runtime contracts, dependency expectations, networking assumptions, and the
+  full mode matrix, see **`docs/runtime.md`**. That document is authoritative —
+  this file only carries the local dev shell notes.
 
 ## Local model setup
 - Ollama is installed on Windows host.
@@ -88,9 +92,12 @@ A local, secure AI pipeline for detecting anomalies in HR files before integrati
 
 ## Current code seams
 - `app/main.py` — app factory seam
-- `app/core/config.py` — config seam
+- `app/api/health.py` — liveness (`/health/live`) and readiness (`/health/ready`) probes. Contract is in `docs/runtime.md`.
+- `app/core/config.py` — config seam (`VLM_ENABLED`, mode-dependent URLs)
 - `app/ingestion/ollama_client.py` — single seam for local model calls
-- `app/ingestion/tasks.py` — orchestration seam for ingestion
+- `app/ingestion/tasks.py` — orchestration seam for ingestion (fallback policy lives here)
+- `app/ingestion/extraction_result.py` — canonical flag vocabulary (`flag_vlm_unreachable`, `flag_vlm_disabled_in_env`, etc.)
+- `app/pipeline/completeness.py` — shared payroll completeness rule (5-field)
 - `app/pipeline/status_composition.py` — record status composition seam
 
 ## Debugging policy

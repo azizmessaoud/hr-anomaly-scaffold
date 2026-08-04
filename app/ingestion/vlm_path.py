@@ -16,13 +16,16 @@ from app.ingestion.extraction_result import (
     ERR_VLM_UNREACHABLE,
     ExtractionResult,
     flag_vlm_fallback,
+    flag_vlm_unreachable,
 )
 from app.ingestion.ollama_client import extract_hr_fields
 from app.ingestion.schemas import Flag, HRRecord
+from app.pipeline.completeness import (
+    VLM_HARD_GATE_FIELDS,
+    missing_required_fields,
+)
 
 logger = logging.getLogger(__name__)
-
-_REQUIRED_FIELDS = ("nom", "cin", "cnss")
 
 _EXTRACTION_PROMPT = (
     "Tu es un extracteur de documents RH. "
@@ -101,7 +104,6 @@ def _coerce_record(
     revision: int,
     config: ExtractPipelineConfig,
 ) -> tuple[HRRecord, list[str]]:
-    flags: list[Flag] = []
     record = HRRecord(
         id=doc_id,
         revision=revision,
@@ -114,18 +116,18 @@ def _coerce_record(
         poste=_optional_str(data.get("poste")),
         departement=_optional_str(data.get("departement")),
         confiance=config.vlm_default_confidence,
-        flags=flags,
     )
-    missing = [name for name in _REQUIRED_FIELDS if getattr(record, name) is None]
-    if missing:
-        flags.append(
+    hard_missing = missing_required_fields(record, VLM_HARD_GATE_FIELDS)
+    shared_missing = missing_required_fields(record)
+    if shared_missing:
+        record.flags.append(
             Flag(
                 moteur="vlm",
-                detail="Champ(s) manquant(s) apres extraction VLM",
+                detail=f"Champ(s) manquant(s) apres extraction VLM: {', '.join(shared_missing)}",
                 score=config.vlm_default_confidence,
             )
         )
-    return record, missing
+    return record, hard_missing
 
 
 def _failure(*, source_msg: str, error_code: str) -> ExtractionResult:
@@ -162,7 +164,16 @@ def extract_with_vlm(
     try:
         raw = extract_hr_fields(image_path, _EXTRACTION_PROMPT, config)
     except (httpx.ConnectError, httpx.TimeoutException) as exc:
-        return _failure(source_msg=str(exc), error_code=ERR_VLM_UNREACHABLE)
+        # Transport failure: surface vlm_unreachable so reviewers know this
+        # is an operational/connectivity problem, not a content problem.
+        logger.warning("VLM transport failed: %s", exc)
+        return ExtractionResult(
+            record=None,
+            confidence=0.0,
+            source="vlm",
+            flags=(flag_vlm_unreachable(), flag_vlm_fallback()),
+            erreur_traitement=ERR_VLM_UNREACHABLE,
+        )
     except Exception as exc:
         return _failure(source_msg=str(exc), error_code=ERR_VLM_MALFORMED_JSON)
     finally:

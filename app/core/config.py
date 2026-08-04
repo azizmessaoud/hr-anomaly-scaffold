@@ -11,6 +11,8 @@ class Settings(BaseSettings):
     docling_confidence_threshold: float = 0.75
     docling_confidence_max: float = 1.0
 
+    vlm_enabled: bool = True
+
     ollama_base_url: str = "http://127.0.0.1:11434"
     ollama_model: str = "richardyoung/smolvlm2-2.2b-instruct:q4_k_m"
     ollama_timeout_seconds: int = 120
@@ -30,6 +32,7 @@ class ExtractPipelineConfig(BaseModel):
     model_config = ConfigDict(frozen=True)
 
     docling_confidence_threshold: float
+    vlm_enabled: bool
     ollama_base_url: str
     ollama_model: str
     ollama_timeout_seconds: int
@@ -39,6 +42,7 @@ class ExtractPipelineConfig(BaseModel):
 def make_extract_pipeline_config(settings: Settings) -> ExtractPipelineConfig:
     return ExtractPipelineConfig(
         docling_confidence_threshold=settings.docling_confidence_threshold,
+        vlm_enabled=settings.vlm_enabled,
         ollama_base_url=settings.ollama_base_url,
         ollama_model=settings.ollama_model,
         ollama_timeout_seconds=settings.ollama_timeout_seconds,

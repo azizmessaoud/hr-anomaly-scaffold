@@ -22,12 +22,10 @@ def create_app() -> FastAPI:
     settings = Settings()
     application = FastAPI(title=settings.app_name, lifespan=lifespan)
 
-    @application.get("/health")
-    async def health():
-        return {"status": "ok", "app": settings.app_name}
-
+    from app.api.health import router as health_router
     from app.api.routes_ingestion import router as ingestion_router
 
+    application.include_router(health_router)
     application.include_router(ingestion_router, prefix="/ingest", tags=["ingestion"])
 
     return application

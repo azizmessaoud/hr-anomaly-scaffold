@@ -12,7 +12,11 @@ from app.ingestion.extraction_result import (
     ERR_DOCLING_PARSE_FAILED,
     ERR_FILE_MISSING,
     ExtractionResult,
+    flag_docling_low_confidence_review,
     flag_low_confidence,
+    flag_vlm_disabled_in_env,
+    flag_vlm_fallback,
+    flag_vlm_unreachable,
 )
 from app.ingestion.job_state import (
     JobState,
@@ -22,6 +26,7 @@ from app.ingestion.job_state import (
 )
 from app.ingestion.schemas import HRRecord, RecStatus
 from app.ingestion.vlm_path import extract_with_vlm
+from app.pipeline.completeness import missing_required_fields
 from app.pipeline.status_composition import compose_status
 
 logger = logging.getLogger(__name__)
@@ -85,10 +90,7 @@ def _determine_extraction_status(
     record = result.record
     if result.source == "docling" and result.confidence < threshold:
         return RecStatus.AMBER
-    if any(
-        flag.moteur == result.source and "manquant" in flag.detail
-        for flag in record.flags
-    ):
+    if missing_required_fields(record):
         return RecStatus.AMBER
     return RecStatus.GREEN
 
@@ -110,9 +112,9 @@ def ingest_document(
 
 
 def _needs_vlm_fallback(result: ExtractionResult, threshold: float) -> bool:
-    if not result.succeeded:
+    if not result.succeeded or result.confidence < threshold:
         return True
-    return result.confidence < threshold
+    return result.record is not None and bool(missing_required_fields(result.record))
 
 
 def _combine_flags(*sources: tuple[str, ...]) -> tuple[str, ...]:
@@ -122,6 +124,54 @@ def _combine_flags(*sources: tuple[str, ...]) -> tuple[str, ...]:
             if flag not in seen:
                 seen.append(flag)
     return tuple(seen)
+
+
+def _docling_low_confidence_review_eligible(
+    result: ExtractionResult, threshold: float
+) -> bool:
+    """True iff Docling returned a usable record at low confidence.
+
+    This is the canonical "Docling produced something but it's shaky"
+    condition that maps to ``docling_low_confidence_review`` on the
+    orchestrator-side flag stream.
+    """
+    return (
+        result.source == "docling"
+        and result.succeeded
+        and result.record is not None
+        and result.confidence < threshold
+    )
+
+
+def _stage_from_docling_preserved(
+    docling_result: ExtractionResult,
+    *,
+    doc_id: str,
+    revision: int,
+    threshold: float,
+    extra_flags: tuple[str, ...] = (),
+) -> StageResult:
+    """Build a StageResult that preserves the Docling record and surfaces
+    the canonical review flags on the orchestrator side.
+
+    The ``docling_low_confidence_review`` flag is added when the Docling
+    result is being preserved specifically because of low confidence
+    (i.e. a fallback policy fired). Callers pass ``extra_flags`` for the
+    VLM-side signal (``vlm_unreachable`` or ``vlm_disabled_in_env``).
+    """
+    extraction_status = _determine_extraction_status(docling_result, threshold)
+    extra: list[str] = list(extra_flags)
+    if _docling_low_confidence_review_eligible(docling_result, threshold):
+        extra.append(flag_docling_low_confidence_review())
+    return StageResult(
+        doc_id=doc_id,
+        revision=revision,
+        terminal=False,
+        statut=extraction_status,
+        record=docling_result.record.model_dump(mode="json"),
+        flags=_combine_flags(docling_result.flags, tuple(extra)),
+        erreur_traitement=None,
+    )
 
 
 def extract_fields(
@@ -160,6 +210,29 @@ def extract_fields(
             statut=extraction_status,
         )
 
+    # VLM disabled by config — skip VLM entirely, preserve Docling result.
+    # When the Docling result exists we keep it (policy: keep the best
+    # available extraction), and surface ``vlm_disabled_in_env`` so the
+    # reviewer can tell this was an intentional choice, not an outage.
+    if not config.vlm_enabled:
+        if docling_result.succeeded and docling_result.record is not None:
+            return _stage_from_docling_preserved(
+                docling_result,
+                doc_id=doc_id,
+                revision=revision,
+                threshold=threshold,
+                extra_flags=(flag_vlm_disabled_in_env(),),
+            )
+        detail = f"{ERR_DOCLING_PARSE_FAILED}:{docling_failure_reason or 'docling_failed'}"
+        return StageResult(
+            doc_id=doc_id,
+            revision=revision,
+            terminal=True,
+            statut=RecStatus.RED,
+            flags=docling_result.flags,
+            erreur_traitement=detail,
+        )
+
     fallback_reason = (
         ERR_DOCLING_FAILED
         if docling_failure_reason is not None
@@ -181,6 +254,23 @@ def extract_fields(
             statut=extraction_status,
         )
 
+    # VLM failed — preserve Docling result if it was usable. Surface
+    # ``vlm_unreachable`` so reviewers know this was an operational
+    # problem (connectivity), not a content problem. AMBER, not RED —
+    # the Docling record is still useful for human review.
+    if docling_result.succeeded and docling_result.record is not None:
+        return _stage_from_docling_preserved(
+            docling_result,
+            doc_id=doc_id,
+            revision=revision,
+            threshold=threshold,
+            extra_flags=_combine_flags(
+                vlm_result.flags,
+                (flag_vlm_unreachable(),),
+            ),
+        )
+
+    # Both Docling and VLM failed — RED, no usable record
     reasons: list[str] = []
     if docling_failure_reason is not None:
         reasons.append(docling_failure_reason)

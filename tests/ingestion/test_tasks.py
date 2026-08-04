@@ -11,8 +11,12 @@ from app.ingestion.extraction_result import (
     ERR_FILE_MISSING,
     ERR_VLM_MALFORMED_JSON,
     ERR_VLM_MISSING_REQUIRED_FIELD,
+    ERR_VLM_UNREACHABLE,
     ExtractionResult,
+    flag_docling_low_confidence_review,
+    flag_vlm_disabled_in_env,
     flag_vlm_fallback,
+    flag_vlm_unreachable,
 )
 from app.ingestion.job_state import JobState
 from app.ingestion.schemas import HRRecord, RecStatus
@@ -23,6 +27,8 @@ from app.ingestion.tasks import (
     stage_to_job_state,
     validate_record,
 )
+from app.core.config import ExtractPipelineConfig, Settings, make_extract_pipeline_config
+import app.ingestion.tasks as tasks_module
 
 
 # ---------------------------------------------------------------------------
@@ -72,6 +78,7 @@ def _vlm_result(
     confidence: float = 0.5,
     doc_id: str = "doc-x",
     record: HRRecord | None = None,
+    flags: tuple[str, ...] = (flag_vlm_fallback(),),
     erreur_traitement: str | None = None,
 ) -> ExtractionResult:
     if record is None and erreur_traitement is None:
@@ -91,7 +98,7 @@ def _vlm_result(
         record=record,
         confidence=confidence,
         source="vlm",
-        flags=(flag_vlm_fallback(),),
+        flags=flags,
         erreur_traitement=erreur_traitement,
     )
 
@@ -164,6 +171,35 @@ def test_extract_fields_low_confidence_docling_triggers_vlm(fake_document: Path)
     assert flag_vlm_fallback() in stage.flags
 
 
+def test_extract_fields_missing_fields_high_confidence_triggers_vlm(fake_document: Path):
+    """High-confidence Docling but with missing required fields => VLM fallback fires.
+    This is the core bug fix: missing fields should trigger the rescue path even
+    when Docling's confidence score is high. Without this, incomplete extractions
+    silently return AMBER without attempting the fallback.
+    """
+    docling_mock = MagicMock(
+        return_value=_docling_result(
+            statut=RecStatus.AMBER,
+            confidence=0.95,  # high confidence
+            missing=["date_embauche", "salaire_brut"],  # shared payroll completeness fields
+        )
+    )
+    vlm_mock = MagicMock(
+        return_value=_vlm_result(statut=RecStatus.GREEN, confidence=0.6)
+    )
+
+    with patch("app.ingestion.tasks.extract_from_docling", docling_mock):
+        with patch("app.ingestion.tasks.extract_with_vlm", vlm_mock):
+            stage = extract_fields(fake_document, "doc-x")
+
+    assert vlm_mock.call_count == 1, (
+        "VLM should be called when Docling has missing required fields, "
+        "regardless of confidence score"
+    )
+    assert stage.terminal is False
+    assert flag_vlm_fallback() in stage.flags
+
+
 def test_extract_fields_docling_failure_triggers_vlm(fake_document: Path):
     """Docling raised => VLM runs; if VLM succeeds, record is propagated."""
     failing_docling = MagicMock(side_effect=RuntimeError("boom"))
@@ -204,10 +240,13 @@ def test_extract_fields_both_paths_fail_returns_red(fake_document: Path):
     assert ERR_VLM_MALFORMED_JSON in stage.erreur_traitement
 
 
-def test_extract_fields_low_confidence_vlm_failure_returns_red(fake_document: Path):
-    """Low-confidence Docling + VLM missing-required-field => RED.
-    The fact that Docling 'succeeded' with low confidence must NOT be
-    enough to mask a VLM failure.
+def test_extract_fields_low_confidence_docling_vlm_failure_preserves_docling_as_amber(fake_document: Path):
+    """Low-confidence Docling + VLM missing-required-field => AMBER (not RED).
+
+    Spec: 'Keep the best available extraction.' Docling success + VLM
+    failure must NOT overwrite the Docling record with a RED terminal.
+    The record stays in the review queue, flagged ``vlm_unreachable`` so
+    the reviewer knows it's a connectivity problem, not a content one.
     """
     docling_mock = MagicMock(
         return_value=_docling_result(
@@ -225,10 +264,12 @@ def test_extract_fields_low_confidence_vlm_failure_returns_red(fake_document: Pa
         with patch("app.ingestion.tasks.extract_with_vlm", vlm_mock):
             stage = extract_fields(fake_document, "doc-x")
 
-    assert stage.terminal is True
-    assert stage.statut == RecStatus.RED
-    assert stage.erreur_traitement is not None
-    assert ERR_VLM_MISSING_REQUIRED_FIELD in stage.erreur_traitement
+    assert stage.terminal is False
+    assert stage.statut == RecStatus.AMBER
+    assert stage.record is not None
+    assert stage.record["nom"] == "A"
+    assert "vlm_unreachable" in stage.flags
+    assert "docling_low_confidence_review" in stage.flags
 
 
 # ---------------------------------------------------------------------------
@@ -400,3 +441,148 @@ def test_revision_defaults_to_initial_revision_in_pipeline(fake_document: Path):
             job = run_ingestion_pipeline(fake_document, "doc-x")
 
     assert job.revision == INITIAL_REVISION
+
+
+# ---------------------------------------------------------------------------
+# Canonical flag vocabulary — fallback policy (per docs/runtime.md)
+# ---------------------------------------------------------------------------
+
+
+def _stub_config(vlm_enabled: bool) -> ExtractPipelineConfig:
+    """Return a deterministic ExtractPipelineConfig for a given VLM mode."""
+    base = Settings()
+    cfg = make_extract_pipeline_config(base).model_copy(
+        update={"vlm_enabled": vlm_enabled}
+    )
+    return cfg
+
+
+@pytest.fixture(autouse=False)
+def reset_config_cache():
+    """Reset the cached config inside tasks.py between tests.
+
+    The module caches ``_config`` on first call; without resetting, tests
+    that mutate the config (e.g. toggling ``vlm_enabled``) leak state
+    into subsequent tests."""
+    tasks_module._config = None
+    yield
+    tasks_module._config = None
+
+
+def test_vlm_disabled_preserves_low_confidence_docling_with_amber_and_flag(
+    fake_document: Path, reset_config_cache
+):
+    """``VLM_ENABLED=false`` + low-confidence Docling => AMBER, not RED.
+
+    The Docling record is preserved (best-available extraction policy),
+    ``vlm_disabled_in_env`` surfaces the intentional config choice, and
+    ``docling_low_confidence_review`` flags the human-judgment gate.
+    """
+    tasks_module._config = _stub_config(vlm_enabled=False)
+
+    docling_mock = MagicMock(
+        return_value=_docling_result(
+            statut=RecStatus.AMBER, confidence=0.45
+        )
+    )
+    vlm_mock = MagicMock()
+
+    with patch("app.ingestion.tasks.extract_from_docling", docling_mock):
+        with patch("app.ingestion.tasks.extract_with_vlm", vlm_mock):
+            stage = extract_fields(fake_document, "doc-x")
+
+    assert vlm_mock.call_count == 0
+    assert stage.terminal is False
+    assert stage.statut == RecStatus.AMBER
+    assert stage.record is not None
+    assert flag_vlm_disabled_in_env() in stage.flags
+    assert flag_docling_low_confidence_review() in stage.flags
+
+
+def test_vlm_unreachable_preserves_low_confidence_docling_with_amber(
+    fake_document: Path, reset_config_cache
+):
+    """Docling low-confidence + VLM transport failure => AMBER (not RED).
+
+    Reviewer-visible flags: ``vlm_unreachable`` (transport problem) and
+    ``docling_low_confidence_review`` (Docling below threshold).
+    """
+    tasks_module._config = _stub_config(vlm_enabled=True)
+
+    docling_mock = MagicMock(
+        return_value=_docling_result(
+            statut=RecStatus.AMBER, confidence=0.45
+        )
+    )
+    vlm_mock = MagicMock(
+        return_value=_vlm_result(
+            record=None,
+            erreur_traitement=ERR_VLM_UNREACHABLE,
+            flags=(flag_vlm_unreachable(),),
+        )
+    )
+
+    with patch("app.ingestion.tasks.extract_from_docling", docling_mock):
+        with patch("app.ingestion.tasks.extract_with_vlm", vlm_mock):
+            stage = extract_fields(fake_document, "doc-x")
+
+    assert stage.terminal is False
+    assert stage.statut == RecStatus.AMBER
+    assert stage.record is not None
+    assert flag_vlm_unreachable() in stage.flags
+    assert flag_docling_low_confidence_review() in stage.flags
+
+
+def test_vlm_disabled_full_confidence_docling_returns_amber_when_incomplete(
+    fake_document: Path, reset_config_cache
+):
+    """``VLM_ENABLED=false`` + high-confidence Docling missing required fields
+    => AMBER with the existing manquant flag intact. No spurious
+    ``vlm_unreachable`` flag (VLM wasn't unreachable; it was disabled).
+    """
+    tasks_module._config = _stub_config(vlm_enabled=False)
+
+    docling_mock = MagicMock(
+        return_value=_docling_result(
+            statut=RecStatus.AMBER,
+            confidence=0.95,
+            missing=["date_embauche", "salaire_brut"],
+        )
+    )
+    vlm_mock = MagicMock()
+
+    with patch("app.ingestion.tasks.extract_from_docling", docling_mock):
+        with patch("app.ingestion.tasks.extract_with_vlm", vlm_mock):
+            stage = extract_fields(fake_document, "doc-x")
+
+    assert vlm_mock.call_count == 0
+    assert stage.terminal is False
+    assert stage.statut == RecStatus.AMBER
+    assert stage.record is not None
+    assert flag_vlm_disabled_in_env() in stage.flags
+    assert flag_vlm_unreachable() not in stage.flags
+
+
+def test_high_confidence_complete_docling_with_vlm_disabled_returns_green(
+    fake_document: Path, reset_config_cache
+):
+    """``VLM_ENABLED=false`` + clean high-confidence Docling => GREEN, no
+    fallback flags. Sanity check: the disable path doesn't artificially
+    downgrade clean records."""
+    tasks_module._config = _stub_config(vlm_enabled=False)
+
+    docling_mock = MagicMock(
+        return_value=_docling_result(
+            statut=RecStatus.GREEN, confidence=0.95
+        )
+    )
+    vlm_mock = MagicMock()
+
+    with patch("app.ingestion.tasks.extract_from_docling", docling_mock):
+        with patch("app.ingestion.tasks.extract_with_vlm", vlm_mock):
+            stage = extract_fields(fake_document, "doc-x")
+
+    assert vlm_mock.call_count == 0
+    assert stage.terminal is False
+    assert stage.statut == RecStatus.GREEN
+    assert flag_vlm_disabled_in_env() not in stage.flags

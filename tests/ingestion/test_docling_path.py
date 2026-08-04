@@ -20,6 +20,7 @@ def fake_document(tmp_path: Path) -> Path:
 def test_config() -> ExtractPipelineConfig:
     return ExtractPipelineConfig(
         docling_confidence_threshold=0.75,
+        vlm_enabled=True,
         ollama_base_url="http://localhost:11434",
         ollama_model="qwen2.5vl:7b",
         ollama_timeout_seconds=120,
@@ -78,14 +79,23 @@ def test_extract_from_docling_raises_on_docling_failure(fake_document: Path, tes
             extract_from_docling(fake_document, doc_id="doc-x", config=test_config)
 
 
-def test_extract_from_docling_missing_required_field_is_amber(fake_document: Path, test_config: ExtractPipelineConfig):
+def test_extract_from_docling_missing_field_detail_lists_field_names(fake_document: Path, test_config: ExtractPipelineConfig):
+    """Missing field flag detail should list the exact missing field names
+    so reviewers can know what to look for (e.g., 'cin, cnss' not just 'field(s) missing').
+    """
     with patch("app.ingestion.docling_path.DocumentConverter") as MockConverter:
         MockConverter.return_value.convert.return_value = _docling_mock(
-            "Nom: Dupont\nPrenom: Marie\n",  # no CIN, CNSS, date, salaire
+            "Nom: Dupont\nPrenom: Marie\n",  # missing: cin, cnss, date_embauche, salaire_brut
             0.95,
         )
         result = extract_from_docling(fake_document, doc_id="doc-x", config=test_config)
 
     assert result.succeeded is True
     assert result.record is not None
-    assert any("manquant" in flag.detail for flag in result.record.flags)
+    missing_flag = next(
+        (flag for flag in result.record.flags if "manquant" in flag.detail),
+        None,
+    )
+    assert missing_flag is not None
+    listed = {f.strip() for f in missing_flag.detail.split(":")[-1].split(",")}
+    assert listed == {"cin", "cnss", "date_embauche", "salaire_brut"}
