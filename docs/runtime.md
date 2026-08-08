@@ -15,7 +15,7 @@ Two runtime modes are officially supported:
 
 | Mode           | Trigger                                     | Endpoints    | Worker            |
 | -------------- | ------------------------------------------- | ------------ | ----------------- |
-| Demo (default) | `VLM_ENABLED=true\|false`, no broker wired  | Synchronous  | None — in-process |
+| Demo (default) | No broker wired                             | Synchronous  | None — in-process |
 | Full-stack     | Celery + Redis + Postgres wired (planned)   | Async        | Celery worker     |
 
 Demo mode is the default path for new users and for the WSL/Windows
@@ -33,26 +33,23 @@ unready.
 | ------------- | --------- | ---------- | ------------------------------------------------------------------ |
 | FastAPI       | Required  | Required   | The process must be up; otherwise the probe itself fails.          |
 | Docling       | Required  | Required   | Layer 1 ingestion/extraction; without it, the pipeline can't run.  |
-| VLM (Ollama)  | Optional  | Optional   | `VLM_ENABLED=false` short-circuits the VLM path entirely.          |
+| RapidOCR      | Optional  | Optional   | `RAPIDOCR_ENABLED=false` short-circuits the RapidOCR path entirely.|
 | Redis         | Optional  | Required   | Demo mode never queries Redis.                                     |
 | Postgres      | Optional  | Required   | Demo mode uses an in-memory repository.                            |
 | Celery        | Optional  | Required   | Demo mode runs the pipeline in-process.                            |
 
-**`VLM_ENABLED=false` semantics:** when the flag is false, the
-`extract_fields()` orchestrator skips the VLM call entirely and
+**`RAPIDOCR_ENABLED=false` semantics:** when the flag is false, the
+`extract_fields()` orchestrator skips the RapidOCR call entirely and
 classifies low-confidence Docling results as AMBER (reviewable). The
-readiness probe reports VLM as `disabled`, not `down`.
+readiness probe reports RapidOCR as `disabled`, not `down`.
 
 ## Feature flags
 
 | Flag                       | Default              | Effect when off / changed                                   |
 | -------------------------- | -------------------- | ----------------------------------------------------------- |
-| `VLM_ENABLED`              | `true`               | Skip VLM path; classify low-confidence Docling as AMBER.    |
-| `DOCLING_CONFIDENCE_THRESHOLD` | `0.75`            | Below threshold = trigger VLM fallback.                      |
-| `VLM_DEFAULT_CONFIDENCE`   | `0.6`                | Confidence assigned to VLM-extracted records.                |
-| `OLLAMA_TIMEOUT_SECONDS`   | `120`                | Per-call HTTP timeout for Ollama.                            |
-| `OLLAMA_HOST` (server bind) | n/a (env-controlled) | Bind address when starting `ollama serve`. Distinct from client-side `OLLAMA_BASE_URL`. |
-| `OLLAMA_BASE_URL`          | `http://127.0.0.1:11434` | Client-side URL the pipeline POSTs to. **In WSL, must be the Windows host IP, not `127.0.0.1`.** |
+| `RAPIDOCR_ENABLED`         | `true`               | Skip RapidOCR path; classify low-confidence Docling as AMBER.|
+| `DOCLING_CONFIDENCE_THRESHOLD` | `0.75`            | Below threshold = trigger RapidOCR fallback.                 |
+| `RAPIDOCR_DEFAULT_CONFIDENCE` | `0.6`              | Confidence assigned to RapidOCR-extracted records.           |
 
 ## Endpoint dependency contracts
 
@@ -65,7 +62,7 @@ readiness probe reports VLM as `disabled`, not `down`.
 ### `GET /health/ready`
 
 - **Hard deps (demo mode):** Docling importable, `DocumentConverter` usable.
-- **Optional deps:** VLM, Redis, Postgres, Celery.
+- **Optional deps:** RapidOCR, Redis, Postgres, Celery.
 - **Response shape:**
   ```json
   {
@@ -73,7 +70,7 @@ readiness probe reports VLM as `disabled`, not `down`.
     "mode": "demo",
     "checks": {
       "docling": {"status": "up", "required": true},
-      "vlm":     {"status": "up|down|disabled", "required": false, "url": "..."}
+      "rapidocr": {"status": "up|down|disabled", "required": false}
     },
     "degraded": true  // present only when an optional dep is down
   }
@@ -91,7 +88,7 @@ code should prefer `/health/live` and `/health/ready`.
 
 - **Hard deps (demo mode):** FastAPI up, Docling importable, extraction
   + validation + anomaly code loaded.
-- **Optional deps:** VLM. When unavailable, the pipeline degrades to
+- **Optional deps:** RapidOCR. When unavailable, the pipeline degrades to
   Docling-only and the result is AMBER.
 - **Not yet required:** Celery, Redis, Postgres.
 - **Response:** A `JobState` with the six-field contract (`doc_id`,
@@ -105,22 +102,22 @@ code should prefer `/health/live` and `/health/ready`.
 
 ## Fallback policy — keep the best available extraction
 
-The orchestrator implements a single rule: **a failed VLM fallback
+The orchestrator implements a single rule: **a failed RapidOCR fallback
 must not overwrite a usable Docling result.** Concretely:
 
-| Docling                       | VLM                          | Final       | Reviewer-visible flag(s)                |
+| Docling                       | RapidOCR                     | Final       | Reviewer-visible flag(s)                |
 | ----------------------------- | ---------------------------- | ----------- | --------------------------------------- |
 | High confidence + complete     | Not called                   | GREEN       | (none)                                  |
-| Low confidence + complete     | Disabled (`VLM_ENABLED=false`) | AMBER       | `vlm_disabled_in_env`, `docling_low_confidence_review` |
-| Low confidence + complete     | Unreachable (transport)      | AMBER       | `vlm_unreachable`, `docling_low_confidence_review` |
-| Low confidence + complete     | Returns no record            | AMBER       | `vlm_unreachable`, `docling_low_confidence_review` |
-| Low confidence + complete     | Returns valid record         | AMBER/GREEN | `vlm_fallback`                          |
+| Low confidence + complete     | Disabled (`RAPIDOCR_ENABLED=false`) | AMBER       | `rapidocr_disabled_in_env`, `docling_low_confidence_review` |
+| Low confidence + complete     | Unreachable (engine)         | AMBER       | `rapidocr_unreachable`, `docling_low_confidence_review` |
+| Low confidence + complete     | Returns no record            | AMBER       | `rapidocr_unreachable`, `docling_low_confidence_review` |
+| Low confidence + complete     | Returns valid record         | AMBER/GREEN | `rapidocr_fallback`                     |
 | Hard failure (exception/parse) | Disabled                    | RED         | `docling_parse_failed`                  |
-| Hard failure                  | Unreachable                  | RED         | `docling_parse_failed`, `vlm_unreachable` |
+| Hard failure                  | Unreachable                  | RED         | `docling_parse_failed`, `rapidocr_unreachable` |
 
 AMBER means "usable record exists, but a human should look at it."
 RED means "no usable record, nothing for a human to act on." RED is
-stuck — neither VLM nor validation promotes a RED result upward.
+stuck — neither RapidOCR nor validation promotes a RED result upward.
 
 ## Canonical flag vocabulary
 
@@ -131,9 +128,9 @@ compound name.
 
 | Flag                              | Meaning                                                              | Action for reviewer                       |
 | --------------------------------- | -------------------------------------------------------------------- | ----------------------------------------- |
-| `vlm_unreachable`                 | VLM expected but transport failed (network/timeout/host unreachable). | Investigate connectivity (host IP, firewall, `ollama serve`). |
-| `vlm_disabled_in_env`             | VLM intentionally disabled by config (`VLM_ENABLED=false`).          | Accept the Docling result; focus on completeness. |
-| `vlm_fallback`                    | VLM rescue path was used successfully.                               | The read came from the less-trusted path; inspect carefully. |
+| `rapidocr_unreachable`            | RapidOCR expected but engine not available.                          | Investigate onnxruntime installation.     |
+| `rapidocr_disabled_in_env`        | RapidOCR intentionally disabled by config (`RAPIDOCR_ENABLED=false`).| Accept the Docling result; focus on completeness. |
+| `rapidocr_fallback`               | RapidOCR rescue path was used successfully.                          | The read came from the less-trusted path; inspect carefully. |
 | `docling_low_confidence_review`   | Docling produced a usable record below the confidence threshold.     | Inspect and decide; the read is shaky.    |
 | `low_confidence`                  | Generic low-confidence marker. Kept for backward compatibility.     | Treat as a confidence signal.             |
 | `missing_fields:<f1,f2,...>`      | Required fields absent after extraction.                             | Add the missing fields to the source doc; otherwise flag the record. |
@@ -144,32 +141,17 @@ records.
 
 ## Networking assumptions
 
-The WSL/Windows-host topology trips up newcomers. The two pieces:
-
-- **`OLLAMA_HOST`** is the bind address for the Ollama server (passed
-  to `ollama serve` as `OLLAMA_HOST=0.0.0.0` on the Windows host so it
-  listens on every interface).
-- **`OLLAMA_BASE_URL`** is the client-side URL the pipeline uses to
-  reach Ollama. **In WSL, this must be the Windows host IP** (e.g.
-  `http://172.20.x.x:11434`), **never `127.0.0.1`**. Loopback inside
-  WSL points to WSL's own loopback, not the Windows host.
-
-Other networking requirements:
-
-- Windows firewall must allow inbound TCP on port `11434` from the WSL
-  virtual NIC.
-- WSL2's NAT means `127.0.0.1` on Windows is not reachable from WSL
-  unless mirrored mode is enabled — and even then, prefer the host IP
-  for clarity.
+- No special networking requirements for demo mode; all processing is local.
+- In full-stack mode, Redis and Postgres must be reachable from the API server and Celery workers.
 
 ## Repo map — where each contract lives
 
 | Concern                        | File                            |
 | ------------------------------ | ------------------------------- |
-| Mode flag (`VLM_ENABLED`)      | `app/core/config.py`            |
+| Feature flags                  | `app/core/config.py`            |
 | Fallback orchestration         | `app/ingestion/tasks.py`       |
 | Docling path                   | `app/ingestion/docling_path.py` |
-| VLM path                       | `app/ingestion/vlm_path.py`     |
+| RapidOCR path                  | `app/ingestion/rapidocr_path.py`|
 | Extraction result boundary     | `app/ingestion/extraction_result.py` |
 | Status composition             | `app/pipeline/status_composition.py` |
 | Shared payroll completeness    | `app/pipeline/completeness.py`  |

@@ -4,7 +4,7 @@
 
 **Deux principes non négociables** (repris et renforcés de la v2) :
 1. **Human-in-the-loop, jamais boîte noire** — chaque anomalie doit être explicable et révisable par un responsable RH.
-2. **Les données ne quittent jamais l'infrastructure contrôlée** — CIN, CNSS, salaire, données de santé = données personnelles sensibles (RGPD / Loi 09-08). Aucun appel à une API cloud (gratuite ou payante) sur des données réelles tant qu'un DPA n'est pas signé. C'est pourquoi le moteur LLM par défaut est un **VLM local**, pas Gemini.
+2. **Les données ne quittent jamais l'infrastructure contrôlée** — CIN, CNSS, salaire, données de santé = données personnelles sensibles (RGPD / Loi 09-08). Aucun appel à une API cloud (gratuite ou payante) sur des données réelles tant qu'un DPA n'est pas signé.
 
 ---
 
@@ -14,7 +14,7 @@ Un framework générique de construction de système IA circule souvent en 8 ét
 
 | Étape générique | Dans votre projet | Décision |
 |---|---|---|
-| 1. Choisir le LLM | Pas de LLM cloud (GPT/Claude/Gemini) sur données réelles | **VLM local** : Qwen2.5-VL 7B ou SmolDocling, servi via **Ollama** ou **vLLM** |
+| 1. Choisir le LLM | Pas de LLM cloud (GPT/Claude/Gemini) sur données réelles | **Pas de LLM utilisé** — Docling pour l'extraction structurée, OCR local (RapidOCR) en fallback |
 | 2. Framework IA | LangChain/LangGraph optionnels | Pipeline explicite (Docling → validation → PyOD), orchestré en Celery ; LangGraph seulement si le cahier des charges l'exige |
 | 3. Collecte/traitement des données | Crawl4AI, Firecrawl, Docling, Unstructured, LlamaParse | **Docling** retenu (structure tableaux/en-têtes, export Markdown) ; pas de crawling web, vos données arrivent en upload |
 | 4. Embeddings | OpenAI Embeddings, Sentence Transformers | **Non pertinent ici** — ce projet ne fait pas de recherche sémantique sur un corpus, il traite des enregistrements structurés au fil de l'eau. Pas de RAG nécessaire |
@@ -35,15 +35,13 @@ Un framework générique de construction de système IA circule souvent en 8 ét
         ▼
 ┌───────────────────┐
 │ Layer 1 — Ingestion│  PyMuPDF / pdf2image (PDF → image si scanné)
-│   & OCR/Layout      │  Docling (primaire) + Surya/PaddleOCR (fallback scans)
-│                     │  Local VLM (Qwen2.5-VL 7B / SmolDocling via Ollama)
+│   & OCR/Layout      │  Docling (primaire) + RapidOCR (fallback scans)
 │                     │  → fallback uniquement si confiance Docling basse
 └─────────┬───────────┘
           ▼
 ┌───────────────────┐
 │ Layer 2 — Extraction│  Regex/heuristiques pour champs standards
-│   & Normalisation   │  Sortie VLM contrainte en JSON pour cas complexes
-│                     │  → schéma canonique HR (Pydantic)
+│   & Normalisation   │  → schéma canonique HR (Pydantic)
 └─────────┬───────────┘
           ▼
 ┌───────────────────┐
@@ -90,9 +88,7 @@ Un framework générique de construction de système IA circule souvent en 8 ét
 |---|---|---|
 | **PyMuPDF (fitz)** | Extraction texte natif des PDF, conversion page → image | Primaire, local |
 | **Docling (IBM)** | Compréhension de mise en page : tableaux, en-têtes, ordre de lecture, export Markdown | Primaire pour documents imprimés/structurés |
-| **Surya / PaddleOCR** | OCR sur photos de mauvaise qualité, mise en page complexe | Fallback documents scannés/photographiés |
-| **Tesseract + OCRmyPDF** | Baseline CPU pur, sans dépendance GPU | Fallback ultime si aucune ressource GPU |
-| **VLM local (Qwen2.5-VL 7B ou SmolDocling, via Ollama)** | Extraction directe en JSON pour cas ambigus (écriture manuscrite, mise en page inhabituelle) | Fallback déclenché uniquement si le score de confiance Docling est bas |
+| **RapidOCR (ONNX Runtime)** | OCR sur documents scannés ou photographiés | Fallback si Docling échoue ou confiance basse |
 
 Logique de déclenchement :
 ```
@@ -100,15 +96,15 @@ Docling(document) → confidence_score
 if confidence_score >= threshold:
     utiliser sortie Docling
 else:
-    utiliser VLM local en fallback (Ollama)
+    utiliser RapidOCR en fallback
 ```
 
-Cela garde le chemin principal rapide et déterministe, et réserve le coût GPU/latence du VLM aux cas réellement difficiles.
+Cela garde le chemin principal rapide et déterministe, et réserve le fallback OCR aux cas réellement difficiles.
 
 ### Layer 2 — Extraction & Normalisation
 - Schéma canonique défini en **Pydantic v2** (`HRRecord`) : nom, prénom, CIN, CNSS, date d'embauche, salaire brut, poste, département.
 - Parsing par regex/heuristiques pour les champs à format fixe (CIN, CNSS, dates, montants).
-- Pour les layouts non standards : prompt structuré envoyé au VLM local, réponse contrainte en JSON, puis validée par le même modèle Pydantic — pas de traitement différencié entre sortie OCR classique et sortie VLM, tout converge vers le même schéma.
+- Tout converge vers le même schéma Pydantic, que les données viennent de Docling ou de RapidOCR.
 
 ### Layer 3 — Validation déterministe
 | Type de règle | Exemple |
@@ -132,6 +128,8 @@ Cela garde le chemin principal rapide et déterministe, et réserve le coût GPU
   - **COPOD** — rapide, bon pour données multivariées.
 - Comparaison contre l'historique RH stocké (par département/grade/site) plutôt que contre l'ensemble de l'entreprise, pour éviter les faux positifs liés à des différences légitimes entre équipes.
 - Chaque détecteur produit un score + un motif ; combinez-les en un score de risque global mais gardez la traçabilité de **pourquoi** chaque anomalie a été signalée — indispensable pour que le réviseur RH comprenne la décision.
+- **Orchestrateur** (`app/anomalies/orchestrator.py`) : le seuil `detect_anomalies` est un `StageResult -> StageResult` appelé après `validate_record` dans le pipeline. Il est **consultatif uniquement** — il ajoute des flags mais ne modifie jamais `RecStatus`. Les enregistrements sans `salaire_brut` ou `departement` sont ignorés.
+- **Cohortes** : regroupement par `(departement,)` via `cohort_key()`. Le `CohortBaselineStore` (in-memory, thread-safe) stocke les valeurs de salaire par cohorte. Seuil minimum : 10 échantillons (`MIN_COHORT_SIZE`) avant que les détecteurs ne s'exécutent.
 
 ### Layer 5 — API & Orchestration
 - **FastAPI** : endpoints upload, statut du job, résultats, validation manuelle.
@@ -157,9 +155,7 @@ Cela garde le chemin principal rapide et déterministe, et réserve le coût GPU
 |---|---|---|---|
 | PDF/Image | PyMuPDF, pdf2image, Pillow | Open source | Gratuit |
 | Document AI | Docling | Open source (IBM) | Gratuit |
-| OCR fallback scans | Surya, PaddleOCR | Open source | Gratuit |
-| OCR fallback CPU | Tesseract + OCRmyPDF | Apache 2.0 | Gratuit |
-| VLM local | Qwen2.5-VL 7B ou SmolDocling (via Ollama) | Open source | Gratuit, local |
+| OCR fallback | RapidOCR (ONNX Runtime) | Open source | Gratuit |
 | Modélisation données | Pydantic v2 | MIT | Gratuit |
 | Validation lot | Pandera | Apache 2.0 | Gratuit |
 | Anomalies | PyOD, scikit-learn, statsmodels | BSD | Gratuit |
@@ -174,57 +170,20 @@ Cela garde le chemin principal rapide et déterministe, et réserve le coût GPU
 
 ## 4. Contraintes matérielles à documenter
 
-- Qwen2.5-VL 7B en 4-bit nécessite ~8–10 Go de VRAM ; CPU seul fonctionne mais lentement (secondes à minutes par page). SmolDocling est assez léger pour tourner sur CPU.
-- Vérifiez la disponibilité du modèle choisi dans la bibliothèque Ollama avant de vous engager ; sinon utilisez `transformers`/`vLLM` directement.
-- Débit adapté à une démo/projet de stage (dizaines à quelques centaines de documents) ; ne passe pas à l'échelle entreprise sans GPU supplémentaire — à mentionner explicitement comme limite connue dans le rapport, pas comme un défaut.
-
----
-
-## 4bis. Servir le VLM local — détails pratiques
-
-Le framework générique mentionne une "passerelle IA" (AI Gateway) pour gouverner l'accès aux modèles, agents et API dans un contexte multi-fournisseurs à l'échelle d'une organisation (clés API, OAuth M2M/U2M, Unity Catalog, etc.). Pour un projet de stage avec un seul modèle local, cette infrastructure complète est disproportionnée — mais l'esprit reste valable à petite échelle :
-
-| Concept de la passerelle | Équivalent simplifié pour votre projet |
-|---|---|
-| Un seul point d'entrée pour tous les appels modèle | Un unique client Python (`ollama_client.py`) que tout le pipeline appelle — jamais d'appel direct au modèle depuis plusieurs endroits du code |
-| Authentification systématique | Non nécessaire en local mono-utilisateur ; devient pertinent si vous exposez l'API FastAPI à plusieurs utilisateurs (ajoutez alors une clé API interne ou OAuth basique) |
-| Journalisation de qui a appelé quoi | Chaque appel au VLM local est loggé (document source, prompt, latence, sortie) dans une table Postgres — sert à la fois d'audit et de jeu de données pour améliorer les prompts |
-| Contrôle des coûts/quotas | Non applicable (modèle local, pas de coût par appel) — remplacé par un contrôle de charge GPU (file d'attente Celery pour ne pas saturer le GPU avec des requêtes concurrentes) |
-
-**Comment servir le modèle concrètement :**
-```bash
-# Installation et lancement du modèle local via Ollama
-ollama pull qwen2.5vl:7b
-ollama serve   # expose une API locale sur http://localhost:11434
-```
-```python
-# ollama_client.py — point d'entrée unique pour tout le pipeline
-import ollama
-
-def extract_hr_fields(image_path: str, prompt: str) -> str:
-    response = ollama.chat(
-        model="qwen2.5vl:7b",
-        messages=[{
-            "role": "user",
-            "content": prompt,
-            "images": [image_path]
-        }]
-    )
-    return response["message"]["content"]
-```
-Tout le reste du pipeline (FastAPI, Celery, Streamlit) appelle exclusivement cette fonction — jamais de client Gemini/OpenAI importé, ce qui rend l'absence d'appel cloud vérifiable en une recherche dans le code (`grep -r "openai\|genai\|gemini"` doit ne rien retourner en dehors des commentaires expliquant pourquoi ce n'est pas utilisé).
+- RapidOCR fonctionne en CPU avec ONNX Runtime, pas besoin de GPU.
+- Débit adapté à une démo/projet de stage (dizaines à quelques centaines de documents).
 
 ---
 
 ## 5. Feuille de route suggérée (6 semaines)
 
-1. **Semaine 1** — Pipeline Docling + fallback VLM local ; test sur échantillons réels.
+1. **Semaine 1** — Pipeline Docling + fallback RapidOCR ; test sur échantillons réels.
 2. **Semaine 2** — Schéma Pydantic canonique + parsing regex par type de document.
 3. **Semaine 3** — Règles Pandera/Pydantic pour les cas métier RH.
 4. **Semaine 4** — Détection PyOD (Isolation Forest/ECOD/COPOD) sur champs numériques.
 5. **Semaine 5** — Dashboard Streamlit : upload → résultats → export.
-6. **Semaine 6** — Tests d'intégration, cas limites, jeu de test étiqueté (20–30 documents synthétiques) pour rapporter la précision d'extraction séparément pour Docling et pour le fallback VLM.
+6. **Semaine 6** — Tests d'intégration, cas limites, jeu de test étiqueté (20–30 documents synthétiques) pour rapporter la précision d'extraction séparément pour Docling et pour le fallback RapidOCR.
 
 ---
 
-*Ce document consolide et corrige les versions précédentes : le moteur d'extraction cloud (Gemini) a été remplacé par un VLM local (Qwen2.5-VL 7B / SmolDocling, servi via Ollama) pour rester cohérent avec le principe "les données ne quittent jamais l'hôte." Le mapping avec le framework générique 8-étapes montre aussi pourquoi embeddings/vector DB/RAG ne font pas partie du périmètre : ce projet valide des enregistrements structurés, il ne répond pas à des questions sur un corpus documentaire.*
+*Ce document consolide et corrige les versions précédentes : le moteur VLM local (Qwen2.5-VL / SmolDocling via Ollama) a été remplacé par RapidOCR (ONNX Runtime) pour simplifier l'architecture et réduire les dépendances. Le mapping avec le framework générique 8-étapes montre aussi pourquoi embeddings/vector DB/RAG ne font pas partie du périmètre : ce projet valide des enregistrements structurés, il ne répond pas à des questions sur un corpus documentaire.*

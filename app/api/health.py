@@ -9,7 +9,7 @@ Contracts (canonical in docs/runtime.md):
   when a hard dependency (Docling in demo mode) is missing.
 
 Demo mode hard deps: Docling importable, ``DocumentConverter`` available.
-Demo mode soft deps: VLM (Ollama), Redis, Postgres, Celery — never
+Demo mode soft deps: RapidOCR (onnxruntime), Redis, Postgres, Celery — never
 fatal in demo mode.
 
 The probe function itself is intentionally simple: it imports the
@@ -45,11 +45,11 @@ def _check_docling() -> tuple[bool, str | None]:
     return True, None
 
 
-def _check_vlm(settings: Settings) -> tuple[bool, str | None]:
-    """Optional dep: VLM (Ollama). Reported as down in demo mode but
+def _check_rapidocr(settings: Settings) -> tuple[bool, str | None]:
+    """Optional dep: RapidOCR (onnxruntime). Reported as down in demo mode but
     does not flip readiness to 503."""
-    if not settings.vlm_enabled:
-        return True, "vlm disabled by config"
+    if not settings.rapidocr_enabled:
+        return True, "rapidocr disabled by config"
     return True, None
 
 
@@ -71,24 +71,23 @@ def _build_readiness_payload() -> dict[str, Any]:
     if docling_detail:
         checks["docling"]["detail"] = docling_detail
 
-    vlm_ok, vlm_detail = _check_vlm(settings)
-    vlm_status = "disabled" if (vlm_detail == "vlm disabled by config") else (
-        "up" if vlm_ok else "down"
+    rapidocr_ok, rapidocr_detail = _check_rapidocr(settings)
+    rapidocr_status = "disabled" if (rapidocr_detail == "rapidocr disabled by config") else (
+        "up" if rapidocr_ok else "down"
     )
-    checks["vlm"] = {
-        "status": vlm_status,
+    checks["rapidocr"] = {
+        "status": rapidocr_status,
         "required": False,
-        "url": settings.ollama_base_url,
     }
-    if vlm_detail:
-        checks["vlm"]["detail"] = vlm_detail
+    if rapidocr_detail:
+        checks["rapidocr"]["detail"] = rapidocr_detail
 
     hard_ok = docling_ok
-    degraded = not vlm_ok
+    degraded = not rapidocr_ok
 
     payload: dict[str, Any] = {
         "status": "ok" if hard_ok else "down",
-        "mode": "demo",
+        "mode": "docling_only_demo" if not settings.rapidocr_enabled else "demo_with_rapidocr",
         "checks": checks,
     }
     if degraded:

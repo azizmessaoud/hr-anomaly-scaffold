@@ -20,11 +20,10 @@ def fake_document(tmp_path: Path) -> Path:
 def test_config() -> ExtractPipelineConfig:
     return ExtractPipelineConfig(
         docling_confidence_threshold=0.75,
-        vlm_enabled=True,
-        ollama_base_url="http://localhost:11434",
-        ollama_model="qwen2.5vl:7b",
-        ollama_timeout_seconds=120,
-        vlm_default_confidence=0.5,
+        rapidocr_enabled=True,
+        rapidocr_model_path="models/rapidocr/en_ppocr_server_v2.0_infer.onnx",
+        rapidocr_timeout_seconds=30,
+        rapidocr_default_confidence=0.5,
     )
 
 

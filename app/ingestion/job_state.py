@@ -32,7 +32,7 @@ def job_state_from_record(
     """Project an ``HRRecord`` onto the public ``JobState`` contract.
 
     ``flags_override`` lets the orchestrator carry forward flags that the
-    extractor surfaced (e.g. ``vlm_fallback``) without forcing those flags
+    extractor surfaced (e.g. ``rapidocr_fallback``) without forcing those flags
     into the ``HRRecord`` model itself. ``erreur_traitement_override`` is
     used when the orchestrator-level error message supersedes the
     per-record one.
@@ -72,7 +72,7 @@ def flags_from_strings(raw: tuple[str, ...] | list[str]) -> list[Flag]:
     """Map orchestrator-level string flags to ``Flag`` objects on the wire.
 
     The orchestrator (``tasks.py``) carries extractor flags as plain strings
-    (``"vlm_fallback"``, ``"low_confidence"``) to avoid coupling the
+    (``"rapidocr_fallback"``, ``"low_confidence"``) to avoid coupling the
     pipeline to ``Flag`` shape. When projecting to ``JobState`` for the
     API, those become ``Flag(moteur="pipeline", detail=<flag>)`` rows so
     the existing dashboard renderer keeps working.

@@ -3,9 +3,10 @@ from __future__ import annotations
 import logging
 from contextlib import asynccontextmanager
 
-from fastapi import FastAPI
+from fastapi import FastAPI, Response
 
 from app.core.config import Settings
+from app.core.health import liveness, readiness
 from app.ingestion.tasks import ingest_document
 
 logger = logging.getLogger(__name__)
@@ -22,10 +23,28 @@ def create_app() -> FastAPI:
     settings = Settings()
     application = FastAPI(title=settings.app_name, lifespan=lifespan)
 
-    from app.api.health import router as health_router
+    @application.get("/health")
+    async def health():
+        # Back-compat shim — kept for existing clients; identical body
+        # to ``/health/live`` so older scrapers don't break.
+        return liveness()
+
+    @application.get("/health/live")
+    async def health_live():
+        # Process-only probe — always 200 unless the server is wedged.
+        # Per ``docs/runtime.md``: no dependency checks here.
+        return liveness()
+
+    @application.get("/health/ready")
+    async def health_ready(response: Response):
+        # Mode-aware readiness probe — 503 only on a *hard* dep failure,
+        # 200 (possibly with degraded detail) on soft dep failures.
+        status_code, body = readiness()
+        response.status_code = status_code
+        return body
+
     from app.api.routes_ingestion import router as ingestion_router
 
-    application.include_router(health_router)
     application.include_router(ingestion_router, prefix="/ingest", tags=["ingestion"])
 
     return application

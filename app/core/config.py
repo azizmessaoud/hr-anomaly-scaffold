@@ -11,13 +11,12 @@ class Settings(BaseSettings):
     docling_confidence_threshold: float = 0.75
     docling_confidence_max: float = 1.0
 
-    vlm_enabled: bool = True
+    rapidocr_enabled: bool = True
 
-    ollama_base_url: str = "http://127.0.0.1:11434"
-    ollama_model: str = "richardyoung/smolvlm2-2.2b-instruct:q4_k_m"
-    ollama_timeout_seconds: int = 120
+    rapidocr_model_path: str = "models/rapidocr/en_ppocr_server_v2.0_infer.onnx"
+    rapidocr_timeout_seconds: int = 30
 
-    vlm_default_confidence: float = 0.6
+    rapidocr_default_confidence: float = 0.6
 
     celery_broker_url: str = "redis://localhost:6379/0"
     celery_result_backend: str = "redis://localhost:6379/1"
@@ -32,19 +31,17 @@ class ExtractPipelineConfig(BaseModel):
     model_config = ConfigDict(frozen=True)
 
     docling_confidence_threshold: float
-    vlm_enabled: bool
-    ollama_base_url: str
-    ollama_model: str
-    ollama_timeout_seconds: int
-    vlm_default_confidence: float
+    rapidocr_enabled: bool
+    rapidocr_model_path: str
+    rapidocr_timeout_seconds: int
+    rapidocr_default_confidence: float
 
 
 def make_extract_pipeline_config(settings: Settings) -> ExtractPipelineConfig:
     return ExtractPipelineConfig(
         docling_confidence_threshold=settings.docling_confidence_threshold,
-        vlm_enabled=settings.vlm_enabled,
-        ollama_base_url=settings.ollama_base_url,
-        ollama_model=settings.ollama_model,
-        ollama_timeout_seconds=settings.ollama_timeout_seconds,
-        vlm_default_confidence=settings.vlm_default_confidence,
+        rapidocr_enabled=settings.rapidocr_enabled,
+        rapidocr_model_path=settings.rapidocr_model_path,
+        rapidocr_timeout_seconds=settings.rapidocr_timeout_seconds,
+        rapidocr_default_confidence=settings.rapidocr_default_confidence,
     )

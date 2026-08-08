@@ -1,18 +1,16 @@
 # Domain Glossary — HR Anomaly Detection Pipeline
 
-## VLM Model Selection
+## OCR Engine Selection
 
-The default VLM model is **SmolVLM2** (`richardyoung/smolvlm2-2.2b-instruct:q4_k_m`), running locally via Ollama on the Windows host at `http://127.0.0.1:11434`.
+The primary extraction engine is **Docling** (IBM), with **RapidOCR** (ONNX Runtime) as the fallback for scanned or low-quality documents.
 
-Chosen over alternatives (Unlimited-OCR, MiniCPM-V, Granite) because it runs on CPU-only hardware, integrates cleanly with Docling for fallback, and is sufficient for 1–5-page HR documents. See `docs/model_selection.md` for the ADR.
+Docling handles structured documents (printed forms, tables, headers) while RapidOCR provides a lightweight fallback that runs on CPU without GPU requirements.
 
 | Field | Description |
 |---|---|
-| `docling_confidence_threshold` | Minimum Docling confidence to skip VLM fallback |
-| `ollama_base_url` | Base URL for the local Ollama VLM server |
-| `ollama_model` | Model name served by Ollama |
-| `ollama_timeout_seconds` | HTTP timeout for Ollama calls |
-| `vlm_default_confidence` | Default confidence score assigned to VLM-extracted records (0.6) |
+| `docling_confidence_threshold` | Minimum Docling confidence to trigger RapidOCR fallback |
+| `rapidocr_enabled` | Whether RapidOCR fallback is enabled |
+| `rapidocr_default_confidence` | Default confidence score assigned to RapidOCR-extracted records (0.6) |
 
 ## Status Axes
 
@@ -62,6 +60,33 @@ This ensures that an extraction flagged as low-confidence (AMBER) is never promo
 
 The function implementing the two-axis composition rule, located in `app/pipeline/status_composition.py`. It is used by `validate_record()` in `tasks.py` to combine `stage.statut` (extraction quality, determined by `_determine_extraction_status()`) with the validation result after Pydantic re-instantiation.
 
+## Anomaly Detection (Layer 4)
+
+Statistical anomaly detection runs after validation, behind the `detect_anomalies` seam (`app/anomalies/orchestrator.py`). It is **advisory only** — flags are added to the record but `RecStatus` is never mutated. The human reviewer decides.
+
+| Term | Description |
+|---|---|
+| `cohort_key` | Tuple grouping records for baseline comparison. Currently `(departement,)`. |
+| `CohortBaselineStore` | Append-only, thread-safe in-memory store of salary values per cohort. |
+| `detect_anomalies` | `StageResult -> StageResult` seam called after `validate_record`. |
+| `AnomalyResult` | One detector's verdict: score, outcome (`ANOMALOUS` / `NOT_ANOMALOUS` / `BASELINE_UNAVAILABLE` / `SKIPPED`), and reason. |
+| `MIN_COHORT_SIZE` | Minimum cohort samples before detectors run (default: 10). |
+| Detectors | `IsolationForestDetector` and `ECODDetector` (PyOD wrappers). |
+
+Key properties:
+- Anomaly detection never mutates `RecStatus` — flags only.
+- A failed detector is surfaced as a flag, not an exception.
+- Records without `salaire_brut` or `departement` skip anomaly detection.
+- The salary is appended to the baseline *after* scoring (never scored against itself).
+
+## Pipeline Flow
+
+```
+ingest_document → extract_fields → validate_record → detect_anomalies → stage_to_job_state
+```
+
+Each step is a `StageResult -> StageResult` seam. The orchestrator (`tasks.py`) is the thin dispatcher that threads the record through these steps.
+
 ## Key Code Locations
 
 | Term | Location |
@@ -71,4 +96,7 @@ The function implementing the two-axis composition rule, located in `app/pipelin
 | `compose_status()` | `app/pipeline/status_composition.py` |
 | Extraction status determination | `app/ingestion/tasks.py::` `_determine_extraction_status()` |
 | Final composition in pipeline | `app/ingestion/tasks.py::validate_record()` |
-| Single source for VLM calls | `app/ingestion/ollama_client.py::extract_hr_fields()` |
+| Anomaly orchestrator | `app/anomalies/orchestrator.py::detect_anomalies()` |
+| Baseline store | `app/anomalies/baseline.py::CohortBaselineStore` |
+| Detectors | `app/anomalies/detectors.py` |
+| Cohort key | `app/anomalies/cohort.py::cohort_key()` |

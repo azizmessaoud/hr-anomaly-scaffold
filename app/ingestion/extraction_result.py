@@ -5,16 +5,16 @@ from typing import Literal
 
 from app.ingestion.schemas import HRRecord
 
-ExtractionSource = Literal["docling", "vlm"]
+ExtractionSource = Literal["docling", "rapidocr"]
 
 
 @dataclass(frozen=True)
 class ExtractionResult:
-    """Stable boundary contract for Docling and VLM extraction paths.
+    """Stable boundary contract for Docling and RapidOCR extraction paths.
 
     The task/orchestration layer consumes this object and never sees raw dicts,
     raw exceptions, or unstructured status strings. When an extractor fails
-    (missing file, malformed VLM JSON, missing required fields, …) it returns
+    (missing file, OCR engine unavailable, missing required fields, …) it returns
     this object with ``record=None`` and a populated ``erreur_traitement``.
     """
 
@@ -31,11 +31,9 @@ class ExtractionResult:
 
 # Centralised reason strings — referenced by both extractors and the task layer
 # so a typo in one place can't drift the contract.
-ERR_VLM_MALFORMED_JSON = "vlm_malformed_json"
-ERR_VLM_NOT_OBJECT = "vlm_response_not_object"
-ERR_VLM_MISSING_REQUIRED_FIELD = "vlm_missing_required_field"
-ERR_VLM_INVALID_NUMERIC = "vlm_invalid_numeric"
-ERR_VLM_UNREACHABLE = "vlm_unreachable"
+ERR_RAPIDOCR_NO_TEXT = "rapidocr_no_text"
+ERR_RAPIDOCR_MISSING_REQUIRED_FIELD = "rapidocr_missing_required_field"
+ERR_RAPIDOCR_UNREACHABLE = "rapidocr_unreachable"
 ERR_FILE_MISSING = "file_missing"
 ERR_DOCLING_FAILED = "docling_failed"
 ERR_DOCLING_PARSE_FAILED = "docling_parse_failed"
@@ -45,27 +43,28 @@ def flag_low_confidence() -> str:
     return "low_confidence"
 
 
-def flag_vlm_fallback() -> str:
-    """VLM rescue path was used successfully."""
-    return "vlm_fallback"
+def flag_rapidocr_fallback() -> str:
+    """RapidOCR rescue path was used successfully."""
+    return "rapidocr_fallback"
 
 
-def flag_vlm_unreachable() -> str:
-    """VLM expected but transport failed (network/timeout/host unreachable).
+def flag_rapidocr_unreachable() -> str:
+    """RapidOCR expected but transport failed (engine not available).
 
-    Reviewer should investigate connectivity (firewall, host IP, ollama serve).
-    Distinct from `vlm_disabled_in_env` (intentional config choice).
+    Reviewer should investigate whether the onnxruntime model files are present
+    and the engine is importable. Distinct from ``rapidocr_disabled_in_env``
+    (intentional config choice).
     """
-    return "vlm_unreachable"
+    return "rapidocr_unreachable"
 
 
-def flag_vlm_disabled_in_env() -> str:
-    """VLM intentionally disabled by config (``VLM_ENABLED=false``).
+def flag_rapidocr_disabled_in_env() -> str:
+    """RapidOCR intentionally disabled by config (``RAPIDOCR_ENABLED=false``).
 
     Reviewer should accept the Docling result and focus on completeness;
     this is a deliberate design choice, not an operational problem.
     """
-    return "vlm_disabled_in_env"
+    return "rapidocr_disabled_in_env"
 
 
 def flag_docling_low_confidence_review() -> str:

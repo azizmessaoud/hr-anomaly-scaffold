@@ -9,7 +9,7 @@ L'architecture complète est dans `docs/architecture.md`. **Avant de générer d
 ## Les deux principes non négociables du projet
 
 1. **Human-in-the-loop, jamais boîte noire.** Chaque anomalie détectée doit être explicable (score + motif) et révisable par un responsable RH. N'implémente jamais un chemin qui pousse un enregistrement vers le SIRH sans validation humaine explicite.
-2. **Aucune donnée réelle ne quitte l'infrastructure contrôlée.** CIN, CNSS, salaire, données de santé = données personnelles sensibles (RGPD / Loi 09-08). **Interdiction absolue** d'appeler une API LLM cloud (OpenAI, Gemini, Anthropic, etc.) sur des données réelles. Le moteur d'extraction pour les cas ambigus est un **VLM local servi via Ollama** (Qwen2.5-VL 7B ou SmolDocling), jamais un client cloud.
+2. **Aucune donnée réelle ne quitte l'infrastructure contrôlée.** CIN, CNSS, salaire, données de santé = données personnelles sensibles (RGPD / Loi 09-08). **Interdiction absolue** d'appeler une API LLM cloud (OpenAI, Gemini, Anthropic, etc.) sur des données réelles.
 
 ### Vérification automatique à respecter
 
@@ -23,7 +23,7 @@ Cette commande ne doit rien retourner en dehors de commentaires expliquant expli
 
 | Couche | Outil retenu |
 |---|---|
-| Ingestion/OCR | PyMuPDF (primaire) → Docling (primaire structuré) → Surya/PaddleOCR (fallback scans) → Tesseract+OCRmyPDF (fallback CPU) → VLM local via Ollama (dernier recours) |
+| Ingestion/OCR | PyMuPDF (primaire) → Docling (primaire structuré) → RapidOCR (fallback scans) |
 | Extraction/Normalisation | Regex/heuristiques + schéma canonique Pydantic v2 (`HRRecord`) |
 | Validation déterministe | Pydantic v2 (par enregistrement) + Pandera (par lot/dataframe) |
 | Anomalies statistiques | PyOD (Isolation Forest, ECOD, COPOD) + scikit-learn/statsmodels |
@@ -33,7 +33,6 @@ Cette commande ne doit rien retourner en dehors de commentaires expliquant expli
 ## Conventions de code
 
 - Python 3.11+, type hints partout, `Pydantic v2` (pas v1).
-- Un seul point d'entrée pour le VLM local : `ollama_client.py`. Aucun autre fichier n'appelle Ollama directement.
 - Chaque détecteur PyOD doit exposer un score **et** un motif lisible par un humain — ne retourne jamais un score brut sans justification dans l'UI de revue.
 - Statuts de revue standardisés : `approved` / `minor_anomaly` / `critical_error` (🟢/🟡/🔴 dans le dashboard). N'invente pas d'autres statuts.
 - Écritures vers le SIRH : toujours idempotentes, clé = `doc_id`.
@@ -84,21 +83,28 @@ A local, secure AI pipeline for detecting anomalies in HR files before integrati
   this file only carries the local dev shell notes.
 
 ## Local model setup
-- Ollama is installed on Windows host.
-- vLLM may also be installed on Windows host.
-- WSL may not reliably reach `127.0.0.1` on Windows host.
-- If model calls fail, first verify host binding, firewall, and Windows host IP routing.
-- Do not replace local model usage with cloud APIs.
+- No local LLM models are used in the current pipeline.
+- Extraction relies on Docling (structured documents) and RapidOCR (scanned documents).
+- Do not add LLM dependencies without updating AGENTS.md and architecture.md.
 
 ## Current code seams
 - `app/main.py` — app factory seam
 - `app/api/health.py` — liveness (`/health/live`) and readiness (`/health/ready`) probes. Contract is in `docs/runtime.md`.
-- `app/core/config.py` — config seam (`VLM_ENABLED`, mode-dependent URLs)
-- `app/ingestion/ollama_client.py` — single seam for local model calls
+- `app/core/config.py` — config seam (mode-dependent settings)
 - `app/ingestion/tasks.py` — orchestration seam for ingestion (fallback policy lives here)
-- `app/ingestion/extraction_result.py` — canonical flag vocabulary (`flag_vlm_unreachable`, `flag_vlm_disabled_in_env`, etc.)
+- `app/ingestion/extraction_result.py` — canonical flag vocabulary (`flag_rapidocr_unreachable`, `flag_rapidocr_disabled_in_env`, etc.)
+- `app/anomalies/orchestrator.py` — anomaly detection seam (`detect_anomalies: StageResult -> StageResult`)
+- `app/anomalies/baseline.py` — cohort baseline store seam (in-memory adapter, swap for Postgres later)
 - `app/pipeline/completeness.py` — shared payroll completeness rule (5-field)
 - `app/pipeline/status_composition.py` — record status composition seam
+
+## Pipeline flow
+
+```
+ingest_document → extract_fields → validate_record → detect_anomalies → stage_to_job_state
+```
+
+Each step is a `StageResult -> StageResult` seam. The orchestrator (`tasks.py`) threads the record through these steps. Anomaly detection (`detect_anomalies`) is advisory only — it adds flags but never mutates `RecStatus`.
 
 ## Debugging policy
 - Reproduce first.

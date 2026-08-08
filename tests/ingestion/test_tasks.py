@@ -9,14 +9,14 @@ from app.ingestion.doc_id import INITIAL_REVISION
 from app.ingestion.extraction_result import (
     ERR_DOCLING_FAILED,
     ERR_FILE_MISSING,
-    ERR_VLM_MALFORMED_JSON,
-    ERR_VLM_MISSING_REQUIRED_FIELD,
-    ERR_VLM_UNREACHABLE,
+    ERR_RAPIDOCR_MISSING_REQUIRED_FIELD,
+    ERR_RAPIDOCR_NO_TEXT,
+    ERR_RAPIDOCR_UNREACHABLE,
     ExtractionResult,
     flag_docling_low_confidence_review,
-    flag_vlm_disabled_in_env,
-    flag_vlm_fallback,
-    flag_vlm_unreachable,
+    flag_rapidocr_disabled_in_env,
+    flag_rapidocr_fallback,
+    flag_rapidocr_unreachable,
 )
 from app.ingestion.job_state import JobState
 from app.ingestion.schemas import HRRecord, RecStatus
@@ -72,13 +72,13 @@ def _docling_result(
     )
 
 
-def _vlm_result(
+def _rapidocr_result(
     *,
     statut: RecStatus = RecStatus.GREEN,
     confidence: float = 0.5,
     doc_id: str = "doc-x",
     record: HRRecord | None = None,
-    flags: tuple[str, ...] = (flag_vlm_fallback(),),
+    flags: tuple[str, ...] = (),
     erreur_traitement: str | None = None,
 ) -> ExtractionResult:
     if record is None and erreur_traitement is None:
@@ -97,8 +97,8 @@ def _vlm_result(
     return ExtractionResult(
         record=record,
         confidence=confidence,
-        source="vlm",
-        flags=flags,
+        source="rapidocr",
+        flags=flags if flags else (flag_rapidocr_fallback(),),
         erreur_traitement=erreur_traitement,
     )
 
@@ -126,53 +126,53 @@ def test_ingest_document_existing_file_returns_open_stage(fake_document: Path):
 
 
 # ---------------------------------------------------------------------------
-# extract_fields — Docling-first with VLM fallback
+# extract_fields — Docling-first with RapidOCR fallback
 # ---------------------------------------------------------------------------
 
 
 def test_extract_fields_high_confidence_docling_no_fallback(fake_document: Path):
-    """Docling >= threshold => no VLM call, no fallback flag, GREEN."""
+    """Docling >= threshold => no RapidOCR call, no fallback flag, GREEN."""
 
     docling_mock = MagicMock(
         return_value=_docling_result(
             statut=RecStatus.GREEN, confidence=0.95
         )
     )
-    vlm_mock = MagicMock()
+    rapidocr_mock = MagicMock()
 
     with patch("app.ingestion.tasks.extract_from_docling", docling_mock):
-        with patch("app.ingestion.tasks.extract_with_vlm", vlm_mock):
+        with patch("app.ingestion.tasks.extract_with_rapidocr", rapidocr_mock):
             stage = extract_fields(fake_document, "doc-x")
 
     assert stage.terminal is False
     assert stage.statut == RecStatus.GREEN
-    assert vlm_mock.call_count == 0
+    assert rapidocr_mock.call_count == 0
 
 
-def test_extract_fields_low_confidence_docling_triggers_vlm(fake_document: Path):
-    """Below-threshold Docling => VLM fallback fires; result keeps
-    ``vlm_fallback`` flag, status is AMBER at minimum.
+def test_extract_fields_low_confidence_docling_triggers_rapidocr(fake_document: Path):
+    """Below-threshold Docling => RapidOCR fallback fires; result keeps
+    ``rapidocr_fallback`` flag, status is AMBER at minimum.
     """
     docling_mock = MagicMock(
         return_value=_docling_result(
             statut=RecStatus.AMBER, confidence=0.45
         )
     )
-    vlm_mock = MagicMock(
-        return_value=_vlm_result(statut=RecStatus.GREEN, confidence=0.6)
+    rapidocr_mock = MagicMock(
+        return_value=_rapidocr_result(statut=RecStatus.GREEN, confidence=0.6)
     )
 
     with patch("app.ingestion.tasks.extract_from_docling", docling_mock):
-        with patch("app.ingestion.tasks.extract_with_vlm", vlm_mock):
+        with patch("app.ingestion.tasks.extract_with_rapidocr", rapidocr_mock):
             stage = extract_fields(fake_document, "doc-x")
 
-    assert vlm_mock.call_count == 1
+    assert rapidocr_mock.call_count == 1
     assert stage.terminal is False
-    assert flag_vlm_fallback() in stage.flags
+    assert flag_rapidocr_fallback() in stage.flags
 
 
-def test_extract_fields_missing_fields_high_confidence_triggers_vlm(fake_document: Path):
-    """High-confidence Docling but with missing required fields => VLM fallback fires.
+def test_extract_fields_missing_fields_high_confidence_triggers_rapidocr(fake_document: Path):
+    """High-confidence Docling but with missing required fields => RapidOCR fallback fires.
     This is the core bug fix: missing fields should trigger the rescue path even
     when Docling's confidence score is high. Without this, incomplete extractions
     silently return AMBER without attempting the fallback.
@@ -184,68 +184,68 @@ def test_extract_fields_missing_fields_high_confidence_triggers_vlm(fake_documen
             missing=["date_embauche", "salaire_brut"],  # shared payroll completeness fields
         )
     )
-    vlm_mock = MagicMock(
-        return_value=_vlm_result(statut=RecStatus.GREEN, confidence=0.6)
+    rapidocr_mock = MagicMock(
+        return_value=_rapidocr_result(statut=RecStatus.GREEN, confidence=0.6)
     )
 
     with patch("app.ingestion.tasks.extract_from_docling", docling_mock):
-        with patch("app.ingestion.tasks.extract_with_vlm", vlm_mock):
+        with patch("app.ingestion.tasks.extract_with_rapidocr", rapidocr_mock):
             stage = extract_fields(fake_document, "doc-x")
 
-    assert vlm_mock.call_count == 1, (
-        "VLM should be called when Docling has missing required fields, "
+    assert rapidocr_mock.call_count == 1, (
+        "RapidOCR should be called when Docling has missing required fields, "
         "regardless of confidence score"
     )
     assert stage.terminal is False
-    assert flag_vlm_fallback() in stage.flags
+    assert flag_rapidocr_fallback() in stage.flags
 
 
-def test_extract_fields_docling_failure_triggers_vlm(fake_document: Path):
-    """Docling raised => VLM runs; if VLM succeeds, record is propagated."""
+def test_extract_fields_docling_failure_triggers_rapidocr(fake_document: Path):
+    """Docling raised => RapidOCR runs; if RapidOCR succeeds, record is propagated."""
     failing_docling = MagicMock(side_effect=RuntimeError("boom"))
-    vlm_mock = MagicMock(
-        return_value=_vlm_result(statut=RecStatus.GREEN, confidence=0.6)
+    rapidocr_mock = MagicMock(
+        return_value=_rapidocr_result(statut=RecStatus.GREEN, confidence=0.6)
     )
 
     with patch("app.ingestion.tasks.extract_from_docling", failing_docling):
-        with patch("app.ingestion.tasks.extract_with_vlm", vlm_mock):
+        with patch("app.ingestion.tasks.extract_with_rapidocr", rapidocr_mock):
             stage = extract_fields(fake_document, "doc-x")
 
-    assert vlm_mock.call_count == 1
+    assert rapidocr_mock.call_count == 1
     assert stage.terminal is False
-    assert flag_vlm_fallback() in stage.flags
+    assert flag_rapidocr_fallback() in stage.flags
 
 
 def test_extract_fields_both_paths_fail_returns_red(fake_document: Path):
-    """Docling failure + VLM failure => RED with both reasons surfaced.
+    """Docling failure + RapidOCR failure => RED with both reasons surfaced.
     The previously successful Docling record (if any) must NOT be silently
     substituted.
     """
     failing_docling = MagicMock(side_effect=RuntimeError("d1"))
-    failing_vlm = MagicMock(
-        return_value=_vlm_result(
+    failing_rapidocr = MagicMock(
+        return_value=_rapidocr_result(
             record=None,
-            erreur_traitement=ERR_VLM_MALFORMED_JSON,
+            erreur_traitement=ERR_RAPIDOCR_NO_TEXT,
         )
     )
 
     with patch("app.ingestion.tasks.extract_from_docling", failing_docling):
-        with patch("app.ingestion.tasks.extract_with_vlm", failing_vlm):
+        with patch("app.ingestion.tasks.extract_with_rapidocr", failing_rapidocr):
             stage = extract_fields(fake_document, "doc-x")
 
     assert stage.terminal is True
     assert stage.statut == RecStatus.RED
     assert stage.erreur_traitement is not None
     assert ERR_DOCLING_FAILED in stage.erreur_traitement
-    assert ERR_VLM_MALFORMED_JSON in stage.erreur_traitement
+    assert ERR_RAPIDOCR_NO_TEXT in stage.erreur_traitement
 
 
-def test_extract_fields_low_confidence_docling_vlm_failure_preserves_docling_as_amber(fake_document: Path):
-    """Low-confidence Docling + VLM missing-required-field => AMBER (not RED).
+def test_extract_fields_low_confidence_docling_rapidocr_failure_preserves_docling_as_amber(fake_document: Path):
+    """Low-confidence Docling + RapidOCR missing-required-field => AMBER (not RED).
 
-    Spec: 'Keep the best available extraction.' Docling success + VLM
+    Spec: 'Keep the best available extraction.' Docling success + RapidOCR
     failure must NOT overwrite the Docling record with a RED terminal.
-    The record stays in the review queue, flagged ``vlm_unreachable`` so
+    The record stays in the review queue, flagged ``rapidocr_unreachable`` so
     the reviewer knows it's a connectivity problem, not a content one.
     """
     docling_mock = MagicMock(
@@ -253,22 +253,55 @@ def test_extract_fields_low_confidence_docling_vlm_failure_preserves_docling_as_
             statut=RecStatus.AMBER, confidence=0.45
         )
     )
-    vlm_mock = MagicMock(
-        return_value=_vlm_result(
+    rapidocr_mock = MagicMock(
+        return_value=_rapidocr_result(
             record=None,
-            erreur_traitement=f"{ERR_VLM_MISSING_REQUIRED_FIELD}:cin,cnss",
+            erreur_traitement=ERR_RAPIDOCR_UNREACHABLE,
         )
     )
 
     with patch("app.ingestion.tasks.extract_from_docling", docling_mock):
-        with patch("app.ingestion.tasks.extract_with_vlm", vlm_mock):
+        with patch("app.ingestion.tasks.extract_with_rapidocr", rapidocr_mock):
             stage = extract_fields(fake_document, "doc-x")
 
     assert stage.terminal is False
     assert stage.statut == RecStatus.AMBER
     assert stage.record is not None
     assert stage.record["nom"] == "A"
-    assert "vlm_unreachable" in stage.flags
+    assert "rapidocr_unreachable" in stage.flags
+    assert "docling_low_confidence_review" in stage.flags
+
+
+def test_extract_fields_low_confidence_docling_rapidocr_missing_field_no_unreachable_flag(
+    fake_document: Path,
+) -> None:
+    """When Docling is low-confidence and RapidOCR fails with missing field error
+    (not unreachable), the ``rapidocr_unreachable`` flag should NOT be added."""
+    from app.ingestion.extraction_result import ERR_RAPIDOCR_MISSING_REQUIRED_FIELD
+    from app.ingestion.tasks import extract_fields
+    from app.ingestion.job_state import RecStatus
+
+    docling_mock = MagicMock(
+        return_value=_docling_result(
+            confidence=0.35,
+            flags=("docling_low_confidence_review",),
+        )
+    )
+    rapidocr_mock = MagicMock(
+        return_value=_rapidocr_result(
+            record=None,
+            erreur_traitement=f"{ERR_RAPIDOCR_MISSING_REQUIRED_FIELD}:cin",
+        )
+    )
+
+    with patch("app.ingestion.tasks.extract_from_docling", docling_mock):
+        with patch("app.ingestion.tasks.extract_with_rapidocr", rapidocr_mock):
+            stage = extract_fields(fake_document, "doc-x")
+
+    assert stage.terminal is False
+    assert stage.statut == RecStatus.AMBER
+    assert stage.record is not None
+    assert "rapidocr_unreachable" not in stage.flags
     assert "docling_low_confidence_review" in stage.flags
 
 
@@ -385,14 +418,14 @@ def test_validate_record_bad_payload_returns_red():
 
 def test_run_pipeline_red_path_produces_job_state(fake_document: Path):
     failing_docling = MagicMock(side_effect=RuntimeError("d1"))
-    failing_vlm = MagicMock(
-        return_value=_vlm_result(
-            record=None, erreur_traitement=ERR_VLM_MALFORMED_JSON
+    failing_rapidocr = MagicMock(
+        return_value=_rapidocr_result(
+            record=None, erreur_traitement=ERR_RAPIDOCR_NO_TEXT
         )
     )
 
     with patch("app.ingestion.tasks.extract_from_docling", failing_docling):
-        with patch("app.ingestion.tasks.extract_with_vlm", failing_vlm):
+        with patch("app.ingestion.tasks.extract_with_rapidocr", failing_rapidocr):
             job = run_ingestion_pipeline(fake_document, "doc-x")
 
     assert isinstance(job, JobState)
@@ -410,13 +443,13 @@ def test_stage_to_job_state_red_path_uses_pipeline_flags():
         terminal=True,
         statut=RecStatus.RED,
         record=None,
-        flags=("vlm_fallback", "low_confidence"),
+        flags=("rapidocr_fallback", "low_confidence"),
         erreur_traitement="both_failed",
     )
     job = stage_to_job_state(stage)
 
     flag_details = [flag.detail for flag in job.flags]
-    assert "vlm_fallback" in flag_details
+    assert "rapidocr_fallback" in flag_details
     assert "low_confidence" in flag_details
     assert job.erreur_traitement == "both_failed"
 
@@ -430,14 +463,14 @@ def test_revision_defaults_to_initial_revision_in_pipeline(fake_document: Path):
     """If the pipeline is called without an explicit revision, it defaults
     to ``INITIAL_REVISION`` (1) and the resulting JobState surfaces it."""
     failing_docling = MagicMock(side_effect=RuntimeError("d1"))
-    failing_vlm = MagicMock(
-        return_value=_vlm_result(
-            record=None, erreur_traitement=ERR_VLM_MALFORMED_JSON
+    failing_rapidocr = MagicMock(
+        return_value=_rapidocr_result(
+            record=None, erreur_traitement=ERR_RAPIDOCR_NO_TEXT
         )
     )
 
     with patch("app.ingestion.tasks.extract_from_docling", failing_docling):
-        with patch("app.ingestion.tasks.extract_with_vlm", failing_vlm):
+        with patch("app.ingestion.tasks.extract_with_rapidocr", failing_rapidocr):
             job = run_ingestion_pipeline(fake_document, "doc-x")
 
     assert job.revision == INITIAL_REVISION
@@ -448,11 +481,11 @@ def test_revision_defaults_to_initial_revision_in_pipeline(fake_document: Path):
 # ---------------------------------------------------------------------------
 
 
-def _stub_config(vlm_enabled: bool) -> ExtractPipelineConfig:
-    """Return a deterministic ExtractPipelineConfig for a given VLM mode."""
+def _stub_config(rapidocr_enabled: bool) -> ExtractPipelineConfig:
+    """Return a deterministic ExtractPipelineConfig for a given RapidOCR mode."""
     base = Settings()
     cfg = make_extract_pipeline_config(base).model_copy(
-        update={"vlm_enabled": vlm_enabled}
+        update={"rapidocr_enabled": rapidocr_enabled}
     )
     return cfg
 
@@ -462,85 +495,85 @@ def reset_config_cache():
     """Reset the cached config inside tasks.py between tests.
 
     The module caches ``_config`` on first call; without resetting, tests
-    that mutate the config (e.g. toggling ``vlm_enabled``) leak state
+    that mutate the config (e.g. toggling ``rapidocr_enabled``) leak state
     into subsequent tests."""
     tasks_module._config = None
     yield
     tasks_module._config = None
 
 
-def test_vlm_disabled_preserves_low_confidence_docling_with_amber_and_flag(
+def test_rapidocr_disabled_preserves_low_confidence_docling_with_amber_and_flag(
     fake_document: Path, reset_config_cache
 ):
-    """``VLM_ENABLED=false`` + low-confidence Docling => AMBER, not RED.
+    """``RAPIDOCR_ENABLED=false`` + low-confidence Docling => AMBER, not RED.
 
     The Docling record is preserved (best-available extraction policy),
-    ``vlm_disabled_in_env`` surfaces the intentional config choice, and
+    ``rapidocr_disabled_in_env`` surfaces the intentional config choice, and
     ``docling_low_confidence_review`` flags the human-judgment gate.
     """
-    tasks_module._config = _stub_config(vlm_enabled=False)
+    tasks_module._config = _stub_config(rapidocr_enabled=False)
 
     docling_mock = MagicMock(
         return_value=_docling_result(
             statut=RecStatus.AMBER, confidence=0.45
         )
     )
-    vlm_mock = MagicMock()
+    rapidocr_mock = MagicMock()
 
     with patch("app.ingestion.tasks.extract_from_docling", docling_mock):
-        with patch("app.ingestion.tasks.extract_with_vlm", vlm_mock):
+        with patch("app.ingestion.tasks.extract_with_rapidocr", rapidocr_mock):
             stage = extract_fields(fake_document, "doc-x")
 
-    assert vlm_mock.call_count == 0
+    assert rapidocr_mock.call_count == 0
     assert stage.terminal is False
     assert stage.statut == RecStatus.AMBER
     assert stage.record is not None
-    assert flag_vlm_disabled_in_env() in stage.flags
+    assert flag_rapidocr_disabled_in_env() in stage.flags
     assert flag_docling_low_confidence_review() in stage.flags
 
 
-def test_vlm_unreachable_preserves_low_confidence_docling_with_amber(
+def test_rapidocr_unreachable_preserves_low_confidence_docling_with_amber(
     fake_document: Path, reset_config_cache
 ):
-    """Docling low-confidence + VLM transport failure => AMBER (not RED).
+    """Docling low-confidence + RapidOCR engine unavailable => AMBER (not RED).
 
-    Reviewer-visible flags: ``vlm_unreachable`` (transport problem) and
+    Reviewer-visible flags: ``rapidocr_unreachable`` (engine not importable) and
     ``docling_low_confidence_review`` (Docling below threshold).
     """
-    tasks_module._config = _stub_config(vlm_enabled=True)
+    tasks_module._config = _stub_config(rapidocr_enabled=True)
 
     docling_mock = MagicMock(
         return_value=_docling_result(
             statut=RecStatus.AMBER, confidence=0.45
         )
     )
-    vlm_mock = MagicMock(
-        return_value=_vlm_result(
+    rapidocr_mock = MagicMock(
+        return_value=_rapidocr_result(
             record=None,
-            erreur_traitement=ERR_VLM_UNREACHABLE,
-            flags=(flag_vlm_unreachable(),),
+            erreur_traitement=ERR_RAPIDOCR_UNREACHABLE,
+            flags=(flag_rapidocr_unreachable(),),
         )
     )
 
     with patch("app.ingestion.tasks.extract_from_docling", docling_mock):
-        with patch("app.ingestion.tasks.extract_with_vlm", vlm_mock):
+        with patch("app.ingestion.tasks.extract_with_rapidocr", rapidocr_mock):
             stage = extract_fields(fake_document, "doc-x")
 
     assert stage.terminal is False
     assert stage.statut == RecStatus.AMBER
     assert stage.record is not None
-    assert flag_vlm_unreachable() in stage.flags
+    assert flag_rapidocr_unreachable() in stage.flags
     assert flag_docling_low_confidence_review() in stage.flags
 
 
-def test_vlm_disabled_full_confidence_docling_returns_amber_when_incomplete(
+def test_rapidocr_disabled_full_confidence_docling_returns_amber_when_incomplete(
     fake_document: Path, reset_config_cache
 ):
-    """``VLM_ENABLED=false`` + high-confidence Docling missing required fields
+    """``RAPIDOCR_ENABLED=false`` + high-confidence Docling missing required fields
     => AMBER with the existing manquant flag intact. No spurious
-    ``vlm_unreachable`` flag (VLM wasn't unreachable; it was disabled).
+    ``rapidocr_unreachable`` flag (RapidOCR wasn't unreachable; it was disabled).
     """
-    tasks_module._config = _stub_config(vlm_enabled=False)
+    tasks_module._config = _stub_config(rapidocr_enabled=False)
 
     docling_mock = MagicMock(
         return_value=_docling_result(
@@ -549,40 +582,40 @@ def test_vlm_disabled_full_confidence_docling_returns_amber_when_incomplete(
             missing=["date_embauche", "salaire_brut"],
         )
     )
-    vlm_mock = MagicMock()
+    rapidocr_mock = MagicMock()
 
     with patch("app.ingestion.tasks.extract_from_docling", docling_mock):
-        with patch("app.ingestion.tasks.extract_with_vlm", vlm_mock):
+        with patch("app.ingestion.tasks.extract_with_rapidocr", rapidocr_mock):
             stage = extract_fields(fake_document, "doc-x")
 
-    assert vlm_mock.call_count == 0
+    assert rapidocr_mock.call_count == 0
     assert stage.terminal is False
     assert stage.statut == RecStatus.AMBER
     assert stage.record is not None
-    assert flag_vlm_disabled_in_env() in stage.flags
-    assert flag_vlm_unreachable() not in stage.flags
+    assert flag_rapidocr_disabled_in_env() in stage.flags
+    assert flag_rapidocr_unreachable() not in stage.flags
 
 
-def test_high_confidence_complete_docling_with_vlm_disabled_returns_green(
+def test_high_confidence_complete_docling_with_rapidocr_disabled_returns_green(
     fake_document: Path, reset_config_cache
 ):
-    """``VLM_ENABLED=false`` + clean high-confidence Docling => GREEN, no
+    """``RAPIDOCR_ENABLED=false`` + clean high-confidence Docling => GREEN, no
     fallback flags. Sanity check: the disable path doesn't artificially
     downgrade clean records."""
-    tasks_module._config = _stub_config(vlm_enabled=False)
+    tasks_module._config = _stub_config(rapidocr_enabled=False)
 
     docling_mock = MagicMock(
         return_value=_docling_result(
             statut=RecStatus.GREEN, confidence=0.95
         )
     )
-    vlm_mock = MagicMock()
+    rapidocr_mock = MagicMock()
 
     with patch("app.ingestion.tasks.extract_from_docling", docling_mock):
-        with patch("app.ingestion.tasks.extract_with_vlm", vlm_mock):
+        with patch("app.ingestion.tasks.extract_with_rapidocr", rapidocr_mock):
             stage = extract_fields(fake_document, "doc-x")
 
-    assert vlm_mock.call_count == 0
+    assert rapidocr_mock.call_count == 0
     assert stage.terminal is False
     assert stage.statut == RecStatus.GREEN
-    assert flag_vlm_disabled_in_env() not in stage.flags
+    assert flag_rapidocr_disabled_in_env() not in stage.flags

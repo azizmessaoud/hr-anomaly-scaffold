@@ -11,9 +11,9 @@ from app.ingestion.extraction_result import (
     flag_docling_low_confidence_review,
     flag_low_confidence,
     flag_missing_fields,
-    flag_vlm_disabled_in_env,
-    flag_vlm_fallback,
-    flag_vlm_unreachable,
+    flag_rapidocr_disabled_in_env,
+    flag_rapidocr_fallback,
+    flag_rapidocr_unreachable,
 )
 
 
@@ -23,16 +23,16 @@ def test_flag_low_confidence_is_stable_string():
     assert flag_low_confidence() == flag_low_confidence()
 
 
-def test_flag_vlm_fallback_is_stable_string():
-    assert flag_vlm_fallback() == "vlm_fallback"
+def test_flag_rapidocr_fallback_is_stable_string():
+    assert flag_rapidocr_fallback() == "rapidocr_fallback"
 
 
-def test_flag_vlm_unreachable_is_stable_string():
-    assert flag_vlm_unreachable() == "vlm_unreachable"
+def test_flag_rapidocr_unreachable_is_stable_string():
+    assert flag_rapidocr_unreachable() == "rapidocr_unreachable"
 
 
-def test_flag_vlm_disabled_in_env_is_stable_string():
-    assert flag_vlm_disabled_in_env() == "vlm_disabled_in_env"
+def test_flag_rapidocr_disabled_in_env_is_stable_string():
+    assert flag_rapidocr_disabled_in_env() == "rapidocr_disabled_in_env"
 
 
 def test_flag_docling_low_confidence_review_is_stable_string():
@@ -60,9 +60,9 @@ def test_canonical_flags_are_distinct():
     """Each canonical flag is a distinct string — no aliasing."""
     flags = {
         flag_low_confidence(),
-        flag_vlm_fallback(),
-        flag_vlm_unreachable(),
-        flag_vlm_disabled_in_env(),
+        flag_rapidocr_fallback(),
+        flag_rapidocr_unreachable(),
+        flag_rapidocr_disabled_in_env(),
         flag_docling_low_confidence_review(),
     }
     assert len(flags) == 5

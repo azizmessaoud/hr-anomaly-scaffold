@@ -11,12 +11,15 @@ from app.ingestion.extraction_result import (
     ERR_DOCLING_FAILED,
     ERR_DOCLING_PARSE_FAILED,
     ERR_FILE_MISSING,
+    ERR_RAPIDOCR_MISSING_REQUIRED_FIELD,
+    ERR_RAPIDOCR_NO_TEXT,
+    ERR_RAPIDOCR_UNREACHABLE,
     ExtractionResult,
     flag_docling_low_confidence_review,
     flag_low_confidence,
-    flag_vlm_disabled_in_env,
-    flag_vlm_fallback,
-    flag_vlm_unreachable,
+    flag_rapidocr_disabled_in_env,
+    flag_rapidocr_fallback,
+    flag_rapidocr_unreachable,
 )
 from app.ingestion.job_state import (
     JobState,
@@ -24,8 +27,8 @@ from app.ingestion.job_state import (
     job_state_failed,
     job_state_from_record,
 )
+from app.ingestion.rapidocr_path import extract_with_rapidocr
 from app.ingestion.schemas import HRRecord, RecStatus
-from app.ingestion.vlm_path import extract_with_vlm
 from app.pipeline.completeness import missing_required_fields
 from app.pipeline.status_composition import compose_status
 
@@ -111,7 +114,7 @@ def ingest_document(
     return StageResult(doc_id=doc_id, revision=revision)
 
 
-def _needs_vlm_fallback(result: ExtractionResult, threshold: float) -> bool:
+def _needs_rapidocr_fallback(result: ExtractionResult, threshold: float) -> bool:
     if not result.succeeded or result.confidence < threshold:
         return True
     return result.record is not None and bool(missing_required_fields(result.record))
@@ -157,7 +160,7 @@ def _stage_from_docling_preserved(
     The ``docling_low_confidence_review`` flag is added when the Docling
     result is being preserved specifically because of low confidence
     (i.e. a fallback policy fired). Callers pass ``extra_flags`` for the
-    VLM-side signal (``vlm_unreachable`` or ``vlm_disabled_in_env``).
+    RapidOCR-side signal (``rapidocr_unreachable`` or ``rapidocr_disabled_in_env``).
     """
     extraction_status = _determine_extraction_status(docling_result, threshold)
     extra: list[str] = list(extra_flags)
@@ -201,7 +204,7 @@ def extract_fields(
         )
         docling_failure_reason = f"{ERR_DOCLING_FAILED}:{type(exc).__name__}"
 
-    if docling_result.succeeded and not _needs_vlm_fallback(docling_result, threshold):
+    if docling_result.succeeded and not _needs_rapidocr_fallback(docling_result, threshold):
         extraction_status = _determine_extraction_status(docling_result, threshold)
         return StageResult.from_extraction(
             docling_result,
@@ -210,18 +213,18 @@ def extract_fields(
             statut=extraction_status,
         )
 
-    # VLM disabled by config — skip VLM entirely, preserve Docling result.
+    # RapidOCR disabled by config — skip RapidOCR entirely, preserve Docling result.
     # When the Docling result exists we keep it (policy: keep the best
-    # available extraction), and surface ``vlm_disabled_in_env`` so the
+    # available extraction), and surface ``rapidocr_disabled_in_env`` so the
     # reviewer can tell this was an intentional choice, not an outage.
-    if not config.vlm_enabled:
+    if not config.rapidocr_enabled:
         if docling_result.succeeded and docling_result.record is not None:
             return _stage_from_docling_preserved(
                 docling_result,
                 doc_id=doc_id,
                 revision=revision,
                 threshold=threshold,
-                extra_flags=(flag_vlm_disabled_in_env(),),
+                extra_flags=(flag_rapidocr_disabled_in_env(),),
             )
         detail = f"{ERR_DOCLING_PARSE_FAILED}:{docling_failure_reason or 'docling_failed'}"
         return StageResult(
@@ -238,46 +241,46 @@ def extract_fields(
         if docling_failure_reason is not None
         else f"{flag_low_confidence()}:{docling_result.confidence:.2f}"
     )
-    vlm_result = extract_with_vlm(
+    rapidocr_result = extract_with_rapidocr(
         document_path,
         doc_id=doc_id,
         revision=revision,
         config=config,
     )
 
-    if vlm_result.succeeded and vlm_result.record is not None:
-        extraction_status = _determine_extraction_status(vlm_result, threshold)
+    if rapidocr_result.succeeded and rapidocr_result.record is not None:
+        extraction_status = _determine_extraction_status(rapidocr_result, threshold)
         return StageResult.from_extraction(
-            vlm_result,
+            rapidocr_result,
             doc_id=doc_id,
             revision=revision,
             statut=extraction_status,
         )
 
-    # VLM failed — preserve Docling result if it was usable. Surface
-    # ``vlm_unreachable`` so reviewers know this was an operational
-    # problem (connectivity), not a content problem. AMBER, not RED —
+    # RapidOCR failed — preserve Docling result if it was usable. Surface
+    # ``rapidocr_unreachable`` only when the engine was genuinely unreachable
+    # (not when it ran but returned empty/noisy results). AMBER, not RED —
     # the Docling record is still useful for human review.
     if docling_result.succeeded and docling_result.record is not None:
+        rapidocr_flags = list(rapidocr_result.flags)
+        if rapidocr_result.erreur_traitement == ERR_RAPIDOCR_UNREACHABLE:
+            rapidocr_flags.append(flag_rapidocr_unreachable())
         return _stage_from_docling_preserved(
             docling_result,
             doc_id=doc_id,
             revision=revision,
             threshold=threshold,
-            extra_flags=_combine_flags(
-                vlm_result.flags,
-                (flag_vlm_unreachable(),),
-            ),
+            extra_flags=tuple(rapidocr_flags),
         )
 
-    # Both Docling and VLM failed — RED, no usable record
+    # Both Docling and RapidOCR failed — RED, no usable record
     reasons: list[str] = []
     if docling_failure_reason is not None:
         reasons.append(docling_failure_reason)
     elif docling_result.succeeded:
         reasons.append(fallback_reason)
-    if vlm_result.erreur_traitement is not None:
-        reasons.append(vlm_result.erreur_traitement)
+    if rapidocr_result.erreur_traitement is not None:
+        reasons.append(rapidocr_result.erreur_traitement)
 
     detail = f"{ERR_DOCLING_PARSE_FAILED}:{'|'.join(reasons) or 'unknown'}"
     return StageResult(
@@ -287,7 +290,7 @@ def extract_fields(
         statut=RecStatus.RED,
         flags=_combine_flags(
             docling_result.flags,
-            vlm_result.flags,
+            rapidocr_result.flags,
             (flag_low_confidence(),),
         ),
         erreur_traitement=detail,
@@ -371,4 +374,8 @@ def run_ingestion_pipeline(
         return stage_to_job_state(extract_stage)
 
     validate_stage = validate_record(extract_stage)
-    return stage_to_job_state(validate_stage)
+
+    from app.anomalies.orchestrator import detect_anomalies
+
+    anomaly_stage = detect_anomalies(validate_stage)
+    return stage_to_job_state(anomaly_stage)
