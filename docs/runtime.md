@@ -57,7 +57,7 @@ readiness probe reports RapidOCR as `disabled`, not `down`.
 
 - **Hard deps:** FastAPI process alive.
 - **Optional deps:** None.
-- **Response:** Always 200 `{"status": "ok"}` unless the server is wedged.
+- **Response:** Always 200 with `status: "ok"` and the application name unless the server is wedged.
 
 ### `GET /health/ready`
 
@@ -66,8 +66,9 @@ readiness probe reports RapidOCR as `disabled`, not `down`.
 - **Response shape:**
   ```json
   {
-    "status": "ok",
-    "mode": "demo",
+    "status": "ready",
+    "app": "hr-anomaly-pipeline",
+    "mode": "demo_with_rapidocr",
     "checks": {
       "docling": {"status": "up", "required": true},
       "rapidocr": {"status": "up|down|disabled", "required": false}
@@ -76,8 +77,9 @@ readiness probe reports RapidOCR as `disabled`, not `down`.
   }
   ```
 - **Codes:**
-  - 200 with `status: "ok"` — all hard deps up. Optional deps may be down; if so, `degraded: true` is present.
-  - 503 with `status: "down"` — a hard dep is missing. Don't upload.
+  - 200 with `status: "ready"` — all hard and optional deps are up.
+  - 200 with `status: "degraded"` — hard deps are up but an optional dependency is down.
+  - 503 with `status: "not_ready"` — a hard dep is missing. Don't upload.
 
 ### `GET /health` (legacy)
 
@@ -99,6 +101,21 @@ code should prefer `/health/live` and `/health/ready`.
 - **Hard deps:** In-memory repository (always available in demo mode).
 - **Optional deps:** None.
 - **Codes:** 200 with the stored `JobState`; 404 if not found.
+
+### `GET /ingest/{doc_id}/report`
+
+- Returns the privacy-conscious `AnalysisReport` for the document.
+- The report contains summary counters, grouped anomaly counts,
+  recommendations, and a bounded list of explainable anomaly details.
+- Source HR records are not returned by this endpoint.
+- Returns 404 when the document/job is unknown.
+
+### Upload pre-flight validation
+
+The synchronous demo path validates extension, non-empty content, configured
+maximum size, and the PDF/image container before OCR. The supported current
+extensions are PDF and common image formats. CSV and Excel are not part of the
+current runtime contract; they require a dedicated tabular schema pipeline.
 
 ## Fallback policy — keep the best available extraction
 

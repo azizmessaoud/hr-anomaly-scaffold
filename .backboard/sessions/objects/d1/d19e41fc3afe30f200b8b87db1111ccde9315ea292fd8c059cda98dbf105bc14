@@ -1,0 +1,21 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(.venv/bin/python -m pip list)",
+      "Read(//home/amessaoud/.claude/skills/improve-codebase-architecture/**)",
+      "Bash(.venv/bin/python -m pytest tests/ingestion/ -x -q)",
+      "Bash(.venv/bin/python3 -m pytest tests/ingestion/ -x -q)",
+      "Bash(python -c \"import pytest, app\")",
+      "Bash(/usr/bin/python3 -c \"import ast; [ast.parse\\(open\\(f, encoding='utf-8'\\).read\\(\\), f\\) for f in ['app/pipeline/completeness.py','app/ingestion/vlm_path.py','app/ingestion/docling_path.py','app/ingestion/tasks.py','tests/ingestion/test_docling_path.py','tests/ingestion/test_vlm_path.py','tests/ingestion/test_tasks.py']]\")",
+      "Bash(/c/Users/amessaoud/AppData/Local/Microsoft/WindowsApps/python3 -c \"import ast; [ast.parse\\(open\\(f, encoding='utf-8'\\).read\\(\\), f\\) for f in ['app/pipeline/completeness.py','app/ingestion/vlm_path.py','app/ingestion/docling_path.py','app/ingestion/tasks.py','tests/ingestion/test_docling_path.py','tests/ingestion/test_vlm_path.py','tests/ingestion/test_tasks.py']]; print\\('ALL_SYNTAX_OK'\\)\")",
+      "Bash(find . -type f -name \"*.py\" -not -path \"*/\\\\.*\" -not -path \"*/__pycache__/*\" -not -path \"*/node_modules/*\")",
+      "Bash(find . -type f \\\\\\( -name \"AGENTS.md\" -o -name \"CONTEXT.md\" -o -name \"README.md\" -o -name \"docs\" -type d \\\\\\) -not -path \"*/\\\\.*\" -not -path \"*/__pycache__/*\")",
+      "Bash(.venv/bin/python -m pytest --tb=no -q)",
+      "Bash(.venv/bin/python --version)",
+      "Bash(.venv/bin/python.exe -m pytest --tb=no -q)",
+      "Bash(/usr/bin/python3 -m pytest --tb=no -q)",
+      "Bash(py --version)",
+      "Bash(wsl bash *)"
+    ]
+  }
+}

@@ -30,7 +30,7 @@ main = [
     "scikit-learn>=1.5",
     "statsmodels>=0.14",
     "python-multipart>=0.0.9",
-    " Pillow>=10",
+    "Pillow>=10",
 ]
 
 [build-system]

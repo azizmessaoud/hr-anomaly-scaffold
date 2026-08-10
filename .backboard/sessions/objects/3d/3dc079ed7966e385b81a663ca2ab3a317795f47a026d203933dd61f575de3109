@@ -1,0 +1,4 @@
+{
+  "tests/ingestion/test_tasks.py::test_extract_fields_low_confidence_vlm_failure_returns_red": true,
+  "tests/pipeline/test_data_validation.py::test_required_spaces_are_reported_and_sensitive_values_are_masked": true
+}

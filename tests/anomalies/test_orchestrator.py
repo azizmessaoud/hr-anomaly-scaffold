@@ -96,6 +96,23 @@ def _mock_baseline_insufficient_detector(name: str = "test_detector"):
     return detector
 
 
+def test_detector_failure_is_reported_without_aborting_pipeline():
+    """A detector failure is reviewer-visible and does not block ingestion."""
+    store = CohortBaselineStore()
+    detector = MagicMock()
+    detector.name = "broken_detector"
+    detector._min_samples = MIN_COHORT_SIZE
+    detector.score.side_effect = RuntimeError("model unavailable")
+
+    result = detect_anomalies(_make_stage(), detectors=[detector], baseline_store=store)
+
+    assert "anomaly_detector_failed:broken_detector" in result.flags
+    assert result.statut == RecStatus.GREEN
+    assert result.erreur_traitement is None
+    assert result.anomaly_results[-1]["severity"] == "WARNING"
+    assert store.size(("IT",)) == 1
+
+
 # ---------------------------------------------------------------------------
 # Pass-through tests
 # ---------------------------------------------------------------------------

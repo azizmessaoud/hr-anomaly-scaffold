@@ -348,7 +348,7 @@ def test_validate_record_does_not_promote_amber_to_green():
     assert result.statut == RecStatus.AMBER, (
         "AMBER must NOT be promoted to GREEN by validation"
     )
-    assert result.terminal is True
+    assert result.terminal is False
 
 
 def test_validate_record_keeps_green_when_record_is_well_formed():
@@ -367,6 +367,20 @@ def test_validate_record_keeps_green_when_record_is_well_formed():
     result = validate_record(stage)  # type: ignore[arg-type]
 
     assert result.statut == RecStatus.GREEN
+    assert result.terminal is False
+
+
+def test_pipeline_runs_advisory_anomaly_detection_after_validation(fake_document: Path):
+    """Successful validation must remain eligible for anomaly detection."""
+    docling = MagicMock(return_value=_docling_result())
+
+    with patch("app.ingestion.tasks.extract_from_docling", docling):
+        with patch("app.anomalies.orchestrator.detect_anomalies") as detect:
+            detect.side_effect = lambda stage: stage
+            job = run_ingestion_pipeline(fake_document, "doc-x")
+
+    detect.assert_called_once()
+    assert job.statut == RecStatus.GREEN
 
 
 def test_validate_record_red_stage_is_sticky():

@@ -101,10 +101,43 @@ def detect_anomalies(
 
     new_flags = list(stage.flags)
     any_anomalous = False
+    anomaly_results: list[dict[str, object]] = list(stage.anomaly_results)
 
     for detector in active_detectors:
         baseline = store.values(key)
-        result = detector.score(value, baseline, key)
+        try:
+            result = detector.score(value, baseline, key)
+        except Exception as exc:  # pragma: no cover - detector-specific failure
+            detector_name = getattr(detector, "name", detector.__class__.__name__).lower()
+            logger.exception("Anomaly detector %s failed for doc_id=%s", detector_name, stage.doc_id)
+            anomaly_results.append({
+                "rule_id": f"STATISTICAL_{detector_name.upper()}_FAILED",
+                "anomaly_type": "statistical",
+                "severity": "WARNING",
+                "document_id": stage.doc_id,
+                "column_name": "salaire_brut",
+                "observed_value": "[MASKED]",
+                "expected_condition": "le detecteur doit produire un resultat",
+                "message": f"Le detecteur {detector_name} a echoue: {type(exc).__name__}.",
+                "remediation": "Verifier la configuration du detecteur et relancer l'analyse.",
+                "detector": detector_name,
+                "score": None,
+            })
+            new_flags.append(f"anomaly_detector_failed:{detector_name}")
+            continue
+        anomaly_results.append({
+            "rule_id": f"STATISTICAL_{result.detector.upper()}",
+            "anomaly_type": "statistical",
+            "severity": "ERROR" if result.is_anomalous else "INFO",
+            "document_id": stage.doc_id,
+            "column_name": result.field,
+            "observed_value": "[MASKED]",
+            "expected_condition": "valeur compatible avec la distribution de la cohorte",
+            "message": result.reason,
+            "remediation": "Verifier le salaire et le contexte du poste avant integration.",
+            "detector": result.detector,
+            "score": min(1.0, abs(result.score or 0.0)),
+        })
 
         if result.outcome is AnomalyCheckOutcome.SKIPPED:
             continue
@@ -142,4 +175,5 @@ def detect_anomalies(
         record=stage.record,
         flags=tuple(new_flags),
         erreur_traitement=stage.erreur_traitement,
+        anomaly_results=tuple(anomaly_results),
     )

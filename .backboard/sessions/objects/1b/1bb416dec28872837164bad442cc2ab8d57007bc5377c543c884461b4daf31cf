@@ -1,0 +1,54 @@
+[
+  {
+    "file": "hr_record_01.pdf",
+    "fields": {
+      "nom": "BEN ALI",
+      "prenom": "Ahmed",
+      "cin": "AB12345",
+      "cnss": "198765432",
+      "date_embauche": "15/03/2020",
+      "salaire_brut": "1850,00",
+      "poste": "Ingénieur",
+      "direction": "Direction des Systèmes d'Information"
+    }
+  },
+  {
+    "file": "hr_record_02.pdf",
+    "fields": {
+      "nom": "TRABELSI",
+      "prenom": "Fatma",
+      "cin": "CD98765",
+      "cnss": "123456789",
+      "date_embauche": "2021-06-01",
+      "salaire_brut": "2 200,50",
+      "poste": "Analyste RH",
+      "direction": "Direction des Ressources Humaines"
+    }
+  },
+  {
+    "file": "hr_record_03.pdf",
+    "fields": {
+      "nom": "MAALEJ",
+      "prenom": "Sami",
+      "cin": "EF87654",
+      "cnss": "111222333",
+      "date_embauche": "01/01/2019",
+      "salaire_brut": "3200",
+      "poste": "Chef de projet",
+      "direction": "Direction Finance"
+    }
+  },
+  {
+    "file": "hr_record_04.pdf",
+    "fields": {
+      "nom": "BEN SALAH",
+      "prenom": "Leila",
+      "cin": "GH56789",
+      "cnss": "999888777",
+      "date_embauche": "2022/11/15",
+      "salaire_brut": "1 450.75",
+      "poste": "Technicienne",
+      "direction": "Direction Technique"
+    }
+  }
+]

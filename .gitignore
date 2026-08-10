@@ -5,9 +5,18 @@ __pycache__/
 venv/
 .ruff_cache/
 .pytest_cache/
+.mypy_cache/
+htmlcov/
+.coverage
 .idea/
 .vscode/
 *.egg-info/
 dist/
 build/
 .env
+*.log
+
+# Local agent/session state and temporary runtime data
+.backboard/
+.claude/
+hr-anomaly-uploads/

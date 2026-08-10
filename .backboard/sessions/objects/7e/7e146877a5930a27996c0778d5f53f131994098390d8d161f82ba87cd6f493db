@@ -1,0 +1,397 @@
+from __future__ import annotations
+
+import logging
+from dataclasses import dataclass
+from pathlib import Path
+
+from app.core.config import ExtractPipelineConfig, Settings, make_extract_pipeline_config
+from app.ingestion.doc_id import INITIAL_REVISION
+from app.ingestion.docling_path import extract_from_docling
+from app.ingestion.extraction_result import (
+    ERR_DOCLING_FAILED,
+    ERR_DOCLING_PARSE_FAILED,
+    ERR_FILE_MISSING,
+    ERR_RAPIDOCR_MISSING_REQUIRED_FIELD,
+    ERR_RAPIDOCR_NO_TEXT,
+    ERR_RAPIDOCR_UNREACHABLE,
+    ExtractionResult,
+    flag_docling_low_confidence_review,
+    flag_low_confidence,
+    flag_rapidocr_disabled_in_env,
+    flag_rapidocr_fallback,
+    flag_rapidocr_unreachable,
+)
+from app.ingestion.job_state import (
+    JobState,
+    flags_from_strings,
+    job_state_failed,
+    job_state_from_record,
+)
+from app.ingestion.rapidocr_path import extract_with_rapidocr
+from app.ingestion.schemas import HRRecord, RecStatus
+from app.pipeline.completeness import missing_required_fields
+from app.pipeline.data_validation import validate_hr_record
+from app.pipeline.status_composition import compose_status
+
+logger = logging.getLogger(__name__)
+
+_config: ExtractPipelineConfig | None = None
+
+
+def _get_config() -> ExtractPipelineConfig:
+    global _config
+    if _config is None:
+        _config = make_extract_pipeline_config(Settings())
+    return _config
+
+
+@dataclass(frozen=True)
+class StageResult:
+    doc_id: str
+    revision: int
+    terminal: bool = False
+    statut: RecStatus | None = None
+    record: dict[str, object] | None = None
+    flags: tuple[str, ...] = ()
+    erreur_traitement: str | None = None
+    anomaly_results: tuple[dict[str, object], ...] = ()
+
+    @classmethod
+    def from_extraction(
+        cls,
+        result: ExtractionResult,
+        *,
+        doc_id: str,
+        revision: int,
+        statut: RecStatus,
+    ) -> StageResult:
+        if result.succeeded and result.record is not None:
+            return cls(
+                doc_id=doc_id,
+                revision=revision,
+                terminal=False,
+                statut=statut,
+                record=result.record.model_dump(mode="json"),
+                flags=result.flags,
+                erreur_traitement=None,
+            )
+        return cls(
+            doc_id=doc_id,
+            revision=revision,
+            terminal=True,
+            statut=RecStatus.RED,
+            record=None,
+            flags=result.flags,
+            erreur_traitement=result.erreur_traitement,
+        )
+
+
+def _determine_extraction_status(
+    result: ExtractionResult,
+    threshold: float,
+) -> RecStatus:
+    if not result.succeeded or result.record is None:
+        return RecStatus.RED
+    record = result.record
+    if result.source == "docling" and result.confidence < threshold:
+        return RecStatus.AMBER
+    if missing_required_fields(record):
+        return RecStatus.AMBER
+    return RecStatus.GREEN
+
+
+def ingest_document(
+    document_path: Path,
+    doc_id: str,
+    revision: int = 0,
+) -> StageResult:
+    if not document_path.exists():
+        return StageResult(
+            doc_id=doc_id,
+            revision=revision,
+            terminal=True,
+            statut=RecStatus.RED,
+            erreur_traitement=ERR_FILE_MISSING,
+        )
+    from app.ingestion.file_validation import validate_file_content, validate_file_metadata
+
+    metadata = validate_file_metadata(document_path, max_bytes=Settings().max_upload_size_bytes)
+    if not metadata.valid:
+        return StageResult(
+            doc_id=doc_id, revision=revision, terminal=True, statut=RecStatus.RED,
+            erreur_traitement=metadata.code,
+        )
+    content = validate_file_content(document_path)
+    if not content.valid:
+        return StageResult(
+            doc_id=doc_id, revision=revision, terminal=True, statut=RecStatus.RED,
+            erreur_traitement=content.code,
+        )
+    return StageResult(doc_id=doc_id, revision=revision)
+
+
+def _needs_rapidocr_fallback(result: ExtractionResult, threshold: float) -> bool:
+    if not result.succeeded or result.confidence < threshold:
+        return True
+    return result.record is not None and bool(missing_required_fields(result.record))
+
+
+def _combine_flags(*sources: tuple[str, ...]) -> tuple[str, ...]:
+    seen: list[str] = []
+    for src in sources:
+        for flag in src:
+            if flag not in seen:
+                seen.append(flag)
+    return tuple(seen)
+
+
+def _docling_low_confidence_review_eligible(
+    result: ExtractionResult, threshold: float
+) -> bool:
+    """True iff Docling returned a usable record at low confidence.
+
+    This is the canonical "Docling produced something but it's shaky"
+    condition that maps to ``docling_low_confidence_review`` on the
+    orchestrator-side flag stream.
+    """
+    return (
+        result.source == "docling"
+        and result.succeeded
+        and result.record is not None
+        and result.confidence < threshold
+    )
+
+
+def _stage_from_docling_preserved(
+    docling_result: ExtractionResult,
+    *,
+    doc_id: str,
+    revision: int,
+    threshold: float,
+    extra_flags: tuple[str, ...] = (),
+) -> StageResult:
+    """Build a StageResult that preserves the Docling record and surfaces
+    the canonical review flags on the orchestrator side.
+
+    The ``docling_low_confidence_review`` flag is added when the Docling
+    result is being preserved specifically because of low confidence
+    (i.e. a fallback policy fired). Callers pass ``extra_flags`` for the
+    RapidOCR-side signal (``rapidocr_unreachable`` or ``rapidocr_disabled_in_env``).
+    """
+    extraction_status = _determine_extraction_status(docling_result, threshold)
+    extra: list[str] = list(extra_flags)
+    if _docling_low_confidence_review_eligible(docling_result, threshold):
+        extra.append(flag_docling_low_confidence_review())
+    return StageResult(
+        doc_id=doc_id,
+        revision=revision,
+        terminal=False,
+        statut=extraction_status,
+        record=docling_result.record.model_dump(mode="json"),
+        flags=_combine_flags(docling_result.flags, tuple(extra)),
+        erreur_traitement=None,
+    )
+
+
+def extract_fields(
+    document_path: Path,
+    doc_id: str,
+    revision: int = 0,
+) -> StageResult:
+    config = _get_config()
+    threshold = config.docling_confidence_threshold
+
+    docling_failure_reason: str | None = None
+    try:
+        docling_result = extract_from_docling(
+            document_path,
+            doc_id=doc_id,
+            revision=revision,
+            config=config,
+        )
+    except Exception as exc:
+        logger.warning("Docling failed for %s: %s", doc_id, exc)
+        docling_result = ExtractionResult(
+            record=None,
+            confidence=0.0,
+            source="docling",
+            flags=(),
+            erreur_traitement=ERR_DOCLING_FAILED,
+        )
+        docling_failure_reason = f"{ERR_DOCLING_FAILED}:{type(exc).__name__}"
+
+    if docling_result.succeeded and not _needs_rapidocr_fallback(docling_result, threshold):
+        extraction_status = _determine_extraction_status(docling_result, threshold)
+        return StageResult.from_extraction(
+            docling_result,
+            doc_id=doc_id,
+            revision=revision,
+            statut=extraction_status,
+        )
+
+    # RapidOCR disabled by config — skip RapidOCR entirely, preserve Docling result.
+    # When the Docling result exists we keep it (policy: keep the best
+    # available extraction), and surface ``rapidocr_disabled_in_env`` so the
+    # reviewer can tell this was an intentional choice, not an outage.
+    if not config.rapidocr_enabled:
+        if docling_result.succeeded and docling_result.record is not None:
+            return _stage_from_docling_preserved(
+                docling_result,
+                doc_id=doc_id,
+                revision=revision,
+                threshold=threshold,
+                extra_flags=(flag_rapidocr_disabled_in_env(),),
+            )
+        detail = f"{ERR_DOCLING_PARSE_FAILED}:{docling_failure_reason or 'docling_failed'}"
+        return StageResult(
+            doc_id=doc_id,
+            revision=revision,
+            terminal=True,
+            statut=RecStatus.RED,
+            flags=docling_result.flags,
+            erreur_traitement=detail,
+        )
+
+    fallback_reason = (
+        ERR_DOCLING_FAILED
+        if docling_failure_reason is not None
+        else f"{flag_low_confidence()}:{docling_result.confidence:.2f}"
+    )
+    rapidocr_result = extract_with_rapidocr(
+        document_path,
+        doc_id=doc_id,
+        revision=revision,
+        config=config,
+    )
+
+    if rapidocr_result.succeeded and rapidocr_result.record is not None:
+        extraction_status = _determine_extraction_status(rapidocr_result, threshold)
+        return StageResult.from_extraction(
+            rapidocr_result,
+            doc_id=doc_id,
+            revision=revision,
+            statut=extraction_status,
+        )
+
+    # RapidOCR failed — preserve Docling result if it was usable. Surface
+    # ``rapidocr_unreachable`` only when the engine was genuinely unreachable
+    # (not when it ran but returned empty/noisy results). AMBER, not RED —
+    # the Docling record is still useful for human review.
+    if docling_result.succeeded and docling_result.record is not None:
+        rapidocr_flags = list(rapidocr_result.flags)
+        if rapidocr_result.erreur_traitement == ERR_RAPIDOCR_UNREACHABLE:
+            rapidocr_flags.append(flag_rapidocr_unreachable())
+        return _stage_from_docling_preserved(
+            docling_result,
+            doc_id=doc_id,
+            revision=revision,
+            threshold=threshold,
+            extra_flags=tuple(rapidocr_flags),
+        )
+
+    # Both Docling and RapidOCR failed — RED, no usable record
+    reasons: list[str] = []
+    if docling_failure_reason is not None:
+        reasons.append(docling_failure_reason)
+    elif docling_result.succeeded:
+        reasons.append(fallback_reason)
+    if rapidocr_result.erreur_traitement is not None:
+        reasons.append(rapidocr_result.erreur_traitement)
+
+    detail = f"{ERR_DOCLING_PARSE_FAILED}:{'|'.join(reasons) or 'unknown'}"
+    return StageResult(
+        doc_id=doc_id,
+        revision=revision,
+        terminal=True,
+        statut=RecStatus.RED,
+        flags=_combine_flags(
+            docling_result.flags,
+            rapidocr_result.flags,
+            (flag_low_confidence(),),
+        ),
+        erreur_traitement=detail,
+    )
+
+
+def validate_record(stage: StageResult) -> StageResult:
+    if stage.terminal:
+        return stage
+
+    if stage.record is None:
+        return StageResult(
+            doc_id=stage.doc_id,
+            revision=stage.revision,
+            terminal=True,
+            statut=RecStatus.RED,
+            flags=stage.flags,
+            erreur_traitement="validation_failed:no_record",
+        )
+
+    try:
+        record = HRRecord(**stage.record)
+    except Exception as exc:
+        return StageResult(
+            doc_id=stage.doc_id,
+            revision=stage.revision,
+            terminal=True,
+            statut=RecStatus.RED,
+            flags=stage.flags,
+            erreur_traitement=f"validation_failed:{type(exc).__name__}",
+        )
+
+    validation_status = RecStatus.GREEN
+    final_status = compose_status(stage.statut if stage.statut is not None else RecStatus.RED, validation_status)
+
+    return StageResult(
+        doc_id=stage.doc_id,
+        revision=stage.revision,
+        terminal=True,
+        statut=final_status,
+        record=record.model_dump(mode="json"),
+        flags=stage.flags,
+        erreur_traitement=record.erreur_traitement,
+    )
+
+
+def stage_to_job_state(stage: StageResult) -> JobState:
+    pipeline_flags = flags_from_strings(stage.flags)
+    if stage.record is not None:
+        record_dict = dict(stage.record)
+        if stage.statut is not None:
+            record_dict["statut"] = stage.statut
+        record = HRRecord(**record_dict)
+        merged = record.flags + pipeline_flags
+        return job_state_from_record(
+            record,
+            doc_id=stage.doc_id,
+            revision=stage.revision,
+            flags_override=merged,
+            erreur_traitement_override=stage.erreur_traitement,
+        )
+    return job_state_failed(
+        doc_id=stage.doc_id,
+        revision=stage.revision,
+        erreur_traitement=stage.erreur_traitement or "traitement echoue",
+        flags=pipeline_flags,
+    )
+
+
+def run_ingestion_pipeline(
+    document_path: Path,
+    doc_id: str,
+    revision: int = INITIAL_REVISION,
+) -> JobState:
+    ingest_stage = ingest_document(document_path, doc_id, revision)
+    if ingest_stage.terminal:
+        return stage_to_job_state(ingest_stage)
+
+    extract_stage = extract_fields(document_path, doc_id, revision)
+    if extract_stage.terminal:
+        return stage_to_job_state(extract_stage)
+
+    validate_stage = validate_record(extract_stage)
+
+    from app.anomalies.orchestrator import detect_anomalies
+
+    anomaly_stage = detect_anomalies(validate_stage)
+    return stage_to_job_state(anomaly_stage)

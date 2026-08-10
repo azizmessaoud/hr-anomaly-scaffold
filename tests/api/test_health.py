@@ -92,7 +92,7 @@ def test_health_ready_rapidocr_disabled_in_config():
         s.review_timeout_hours = 48
         return s
 
-    with patch("app.core.health.Settings", side_effect=make_disabled_settings):
+    with patch("app.api.health.Settings", side_effect=make_disabled_settings):
         response = client.get("/health/ready")
 
     assert response.status_code == 200

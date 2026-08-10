@@ -1,0 +1,536 @@
+╭─── Claude Code v2.1.221 ─────────────────────────────────────────────────────╮
+│                                    │ Tips for getting started                │
+│            Welcome back!           │ Run /init to create a CLAUDE.md file w… │
+│                                    │ ─────────────────────────────────────── │
+│               ▐▛███▜▌              │ What's new                              │
+│              ▝▜█████▛▘             │ Bug fixes and reliability improvements  │
+│                ▘▘ ▝▝               │ Added Claude Opus 5 (`claude-opus-5`),… │
+│                                    │ Added `sandbox.network.strictAllowlist… │
+│   minimax-m3 · API Usage Billing   │ /release-notes for more                 │
+│   ~\Desktop\hr-anomaly-scaffold    │                                         │
+╰──────────────────────────────────────────────────────────────────────────────╯
+
+
+❯ /usage 
+  ⎿  Stats dialog dismissed
+
+❯ context from this session  725bd58d-6770-490a-b839-48d6b6713c10               
+
+  Thought for 5m 42s (ctrl+o to expand)
+
+● Stats dialog dismissed.
+
+✻ Crunched for 5m 43s
+
+❯ implement                                                                     
+
+❯ /skills 
+  ⎿  Skills dialog dismissed
+
+❯ /skills 
+  ⎿  Skills dialog dismissed
+
+● I'll help you implement something, but I need to know what you want to
+  implement. Let me check the current state of the project to see what's there.
+
+● Bash(pwd && ls)
+  ⎿  /c/Users/amessaoud/Desktop/hr-anomaly-scaffold
+     AGENTS.md
+     app
+     … +9 lines (ctrl+o to expand)
+
+  Read 3 files (ctrl+o to expand)
+
+● I see this is an HR Anomaly Detection Pipeline project. Your message just says
+  "implement" without specifying what to implement. Let me check what's
+  currently in the project to understand the state and identify potential
+  implementation tasks.
+
+  Read 1 file, listed 1 directory (ctrl+o to expand)
+
+● I have a clear picture of the project. Let me check the current state of
+  implementation and the session notes to understand what's been done.
+
+  Read 2 files (ctrl+o to expand)
+
+● Now I have a much clearer picture. The project is being actively developed
+  with a specific recent spec (docs/runtime-spec.md) for making the pipeline
+  runtime-safe. Let me check what was already implemented vs. what's pending.
+
+  Read 5 files (ctrl+o to expand)
+
+● The project is already in a substantially complete state based on the recent
+  commit history. Your message just says "implement" — I need to ask what to
+  implement.
+
+  Let me see what's pending:
+
+  Listed 3 directories (ctrl+o to expand)
+
+● I now have a complete picture. The project has:
+  - ✅ Layer 1 (Ingestion/OCR) — implemented (docling_path.py, vlm_path.py)
+  - ✅ Layer 2 (Extraction) — implemented (parser_regex.py, schemas.py)
+  - ✅ Layer 3 (Validation) — implemented (Pydantic via HRRecord,
+  validate_record())
+  - ✅ Layer 4 (Anomalies) — NOT implemented (no app/anomalies/ directory)
+  - ✅ Layer 5 (API/Orchestration) — implemented (FastAPI in main.py, routes)
+  - ✅ Layer 6 (Dashboard) — NOT implemented (no app/dashboard/ directory)
+  - ✅ Runtime-safe health/readiness probes
+  - ✅ Canonical flag vocabulary
+  - ✅ Fallback policy (Docling preserved when VLM fails)
+
+  Your message says just "implement" — could you clarify what you'd like me to
+  implement? I'll use AskUserQuestion since "implement" is genuinely ambiguous.
+
+● User answered Claude's questions:
+  ⎿  · What would you like to implement? The codebase already has Layers 1, 2, 
+     3, and 5 plus runtime-safe health probes. Several major items remain 
+     untouched. → Layer 4 anomaly detection
+
+● Layer 4 anomaly detection it is. Let me plan this carefully — this is a
+  meaningful implementation that touches the pipeline.
+
+● Entered plan mode
+  Claude is now exploring and designing an implementation approach.
+
+  Read 8 files (ctrl+o to expand)
+
+❯ how to test using this                                                        
+  C:\Users\amessaoud\Desktop\hr-anomaly-detection-landing-page (1)              
+
+  Read 2 files, listed 1 directory (ctrl+o to expand)
+
+● Now I have a complete picture. Let me think carefully about this
+  implementation before designing the plan.
+
+  The key challenge: Layer 4 (anomaly detection) requires a population of 
+  historical HR records to score against. PyOD detectors like Isolation Forest
+  need a training set to learn "normal." The current pipeline only processes
+  single documents via upload — there's no historical cohort. So the
+  implementation has to address:
+
+  1. Where does the reference distribution come from?
+    - Option A: Synthetic/seed baseline (5–30 sample records shipped as
+  fixtures)
+    - Option B: Per-batch comparison (anomaly vs other uploads in same batch)
+    - Option C: Stream of all jobs in the in-memory repository
+  2. The architecture spec says "compares against historical HR stored by
+  department/grade/site." Without persistent storage, the natural shape is the
+  repository — but that's by-doc, not by-record across departments.
+
+  Let me think about what fits the existing seams. I'll launch an Explore agent
+  in parallel with reading a few more critical files to make sure I understand
+  the seams, then design.
+
+● Explore(Explore anomaly detection integration points)
+  ⎿  Backgrounded agent (↓ to manage · ctrl+o to expand)
+
+  Read 3 files (ctrl+o to expand)
+
+● Excellent — that confirms a critical detail. docs/runtime.md already
+  references Layer 4 in the /ingest/upload contract: "extraction + validation +
+  anomaly code loaded" as a hard dep. There's a strong seam pre-defined.
+
+  Now I have enough context. Let me think through the design carefully before
+  writing the plan.
+
+  Key design questions to resolve:
+
+  1. Where in run_ingestion_pipeline() does anomaly detection fit?
+    - After validate_record() (since validation may set RED → no point scoring
+  RED records).
+    - It should NOT change RecStatus (status composition is canonical,
+  controlled by compose_status). It only adds flag rows.
+    - This means it adds Flag(moteur="anomaly", detail=..., score=...) to the
+  record, never promotes status upward.
+  2. Cold start / baseline problem. With no historical data:
+    - The detector must NOT silently produce nonsense scores on a single record.
+    - Right approach: minimum cohort size (e.g. >= 5 records per cohort
+  grouping) below which anomaly detection returns "no baseline yet, review
+  manually" via a flag like anomaly_baseline_unavailable.
+    - Per architecture: "compare against historical RH stored (by
+  department/grade/site) rather than against the whole company." The grouping is
+  departement (we have it on HRRecord).
+  3. What to score? salaire_brut is the primary numerical signal. The
+  architecture mentions ECOD/COPOD for multivariate — but with one feature
+  (salary) per group, univariate Isolation Forest / z-score is more appropriate.
+  Don't over-engineer multivariate with N=5.
+  4. Detector seam. PyOD's IForest, ECOD, COPOD are all in pyod.models. ECOD and
+  COPOD are parameter-free, ideal. The detector should expose a score(record, 
+  baseline) -> AnomalyScore shape.
+  5. Storage of baseline. The repository is dict[str, JobState], keyed by
+  doc_id. Records within those JobStates have the HR data. So
+  anomalies/baseline.py can iterate repository._jobs.values() and extract
+  records grouped by departement. To avoid coupling repository.py to anomaly
+  internals, the baseline builder takes the repository (or any iterable of
+  JobState) and produces a dict[str, list[float]] mapping departement -> 
+  [salaire_brut, ...].
+  6. Module layout:
+    - app/anomalies/__init__.py
+    - app/anomalies/score.py — AnomalyScore dataclass + detector interface
+    - app/anomalies/detectors.py — Isolation Forest + ECOD (per spec)
+    - app/anomalies/baseline.py — cohort extraction + minimum-size policy
+    - app/anomalies/flags.py — flag vocabulary (flag_anomaly_score,
+  flag_anomaly_baseline_unavailable)
+    - Wired into run_ingestion_pipeline() as a new step before
+  stage_to_job_state()
+  7. Status composition. Anomaly detection does NOT alter RecStatus — only adds
+  flags. The reviewer still decides based on the flag and the score. This
+  respects "anomaly detector exposes a score + a reason, never auto-rejects."
+  8. Tests. Mirror tests/ingestion/ pattern: tests/anomalies/test_detectors.py,
+  test_baseline.py, test_score.py, and an integration test in
+  tests/ingestion/test_tasks.py (or new test_anomalies_integration.py).
+
+  Now I have enough to ask the user a couple of focused clarifying questions
+  before writing the plan.
+● User answered Claude's questions:
+  ⎿  · How should the anomaly baseline be built? PyOD needs a reference 
+     distribution, but the in-memory repository has only previously-uploaded 
+     documents. → Per-department, in-memory only (Recommended)
+     · Which detectors should ship in the first cut? Architecture specifies 
+     Isolation Forest, ECOD, and COPOD, but with small per-department cohorts 
+     some are unstable. → Isolation Forest + ECOD (Recommended)
+     · Should an anomaly score ever change `RecStatus`, or only surface flags 
+     for the human reviewer? → Flags only, status untouched (Recommended)
+
+● All three recommendations accepted. Now let me check the explore agent's
+  progress and then write the plan.
+
+● Task Output a14749ee2159624bd
+  ⎿  Task is still running…
+
+● The agent is still running. I have enough context to draft the plan without it
+  — I'll write the plan now, and the agent's findings can validate or refine
+  details. Let me write the plan.
+
+● Updated plan
+  ⎿  /plan to preview
+
+● Now let me check on the explore agent and incorporate any findings that may
+  refine the plan.
+
+● Task Output a14749ee2159624bd
+  ⎿  Task is still running…
+
+● Still running. The plan I wrote is already informed by my own exploration of
+  the codebase, and the agent is investigating in parallel. If it returns with
+  findings that contradict the plan, I'll adjust before exiting plan mode. For
+  now, the plan is complete.
+
+● User approved Claude's plan
+  ⎿  Plan saved to: ~\.claude\plans\declarative-percolating-moth.md · /plan to 
+     edit
+     Layer 4 — Statistical Anomaly Detection
+
+     Context
+
+     The pipeline currently ships Layers 1 (Docling/VLM ingestion), 2
+     (extraction/normalisation), 3 (Pydantic validation), and 5 (FastAPI +
+     in-memory repo). Layer 4 (anomaly detection) is referenced by
+     docs/architecture.md and docs/runtime.md (the /ingest/upload contract lists
+     "extraction + validation + anomaly code loaded" as a hard dep in demo
+     mode), but no implementation exists yet.
+
+     The intended outcome of this change:
+     - After a record is validated, run two unsupervised detectors (Isolation
+     Forest + ECOD) on salaire_brut against a per-department baseline built from
+     previously-uploaded records already in the in-memory repository.
+     - Surface every anomaly as a Flag(moteur="anomaly", detail=..., score=...)
+     row — never mutate RecStatus (human-in-the-loop: the reviewer reads the
+     score + reason and decides).
+     - Cold-start gracefully: when fewer than MIN_COHORT_SIZE (default 5)
+     records exist for a departement, emit anomaly_baseline_unavailable instead
+     of a meaningless score.
+
+     User decisions captured in this turn:
+     - Baseline scope: per-department, in-memory only.
+     - Detector set: Isolation Forest + ECOD (parameter-free, stable on small
+     cohorts).
+     - Status impact: flags only, never mutate RecStatus.
+
+     Files to add / modify
+
+     New modules — app/anomalies/
+
+     - app/anomalies/__init__.py — exports the public seam (run_anomaly_check,
+     AnomalyScore).
+     - app/anomalies/score.py — AnomalyScore dataclass (cohort: str, score: 
+     float, reason: str, detector: str, consensus: bool). Also
+     AnomalyCheckOutcome enum: ANOMALOUS, NOT_ANOMALOUS, BASELINE_UNAVAILABLE.
+     - app/anomalies/baseline.py — builds the per-department cohort from
+     IngestionJobRepository:
+       - build_baseline(repository: IngestionJobRepository, min_cohort_size: int
+     = 5) -> dict[str, list[float]] — returns departement -> [salaire_brut, 
+     ...].
+       - Reads repository._jobs.values() (private attr — acceptable here; the
+     in-memory repo is intentionally a seam for swapping in Postgres), extracts
+     HRRecord payloads with a parseable salaire_brut and departement, groups by
+     department.
+       - Records with missing salaire_brut or departement are skipped (they
+     cannot contribute to the salary distribution).
+     - app/anomalies/detectors.py — two thin wrappers over PyOD:
+       - class IsolationForestDetector — uses pyod.models.iforest.IForest,
+     contamination=0.1, random_state=42 (deterministic). .score(value, baseline:
+     list[float]) -> float returns the raw decision_function value (PyOD
+     convention: more negative = more anomalous).
+       - class ECODDetector — uses pyod.models.ecod.ECOD (parameter-free). Same
+     .score(...) shape.
+       - Both lazy-construct the underlying PyOD model from the baseline on
+     first call, cache it on the instance, refit when baseline length changes.
+     - app/anomalies/service.py — orchestration: run_anomaly_check(record: 
+     HRRecord, baseline: dict[str, list[float]], min_cohort_size: int = 5) -> 
+     list[AnomalyScore]. Runs both detectors; a record is "consensus anomalous"
+     when both detectors flag it. Records with no departement or no salaire_brut
+     return [].
+     - app/anomalies/flags.py — orchestrator-level string flag vocabulary
+     (parallel to app/ingestion/extraction_result.py::flag_*):
+       - flag_anomaly_baseline_unavailable(department: str, cohort_size: int, 
+     min_required: int) -> str — format:
+     anomaly_baseline_unavailable:dept=Engineering;cohort=3/5.
+       - flag_anomaly_salary(detector: str, score: float, cohort: str) -> str —
+     format: anomaly_salary:iforest:score=-0.42;cohort=Engineering.
+       - flag_anomaly_consensus(cohort: str) -> str — fires when both detectors
+     agree.
+
+     Modified files
+
+     - app/ingestion/tasks.py — wire the new step into run_ingestion_pipeline():
+       - After validate_record() produces a non-terminal StageResult with a
+     non-None record, call run_anomaly_check(parsed_record, 
+     build_baseline(repository)).
+       - Append the resulting AnomalyScore list as Flag(moteur="anomaly", 
+     detail=<flag_string>, score=<score>) rows to the record before
+     stage_to_job_state().
+       - No status change. Validate this with a focused test.
+       - To avoid a circular import, the repository import (from 
+     app.ingestion.repository import get_repository) goes at module level — same
+     pattern already used by routes_ingestion.py. baseline.py does not import
+     from tasks.py.
+     - docs/runtime.md — add a row to the Repository map table for
+     app/anomalies/. Add a one-paragraph note in the fallback policy section
+     that anomaly flags are added post-validation and never affect RecStatus.
+     (Per "Updating this doc" — endpoint/contract-adjacent changes require a doc
+     update.)
+     - CONTEXT.md — append a row to the Key Code Locations table mapping
+     run_anomaly_check → app/anomalies/service.py. Add the MIN_COHORT_SIZE
+     constant to the Glossary table.
+     - tests/anomalies/__init__.py (empty) + new test files:
+       - tests/anomalies/test_baseline.py — unit tests for cohort grouping
+     (skips missing fields, respects min size).
+       - tests/anomalies/test_detectors.py — unit tests for
+     IsolationForestDetector and ECODDetector (clear outlier scores higher than
+     inlier; deterministic with random_state).
+       - tests/anomalies/test_service.py — orchestrator: empty cohort returns
+     BASELINE_UNAVAILABLE; both detectors flag → flag_anomaly_consensus present.
+       - tests/anomalies/test_integration.py — calls run_ingestion_pipeline()
+     with a seeded repository and asserts the resulting JobState.flags includes
+     anomaly rows and statut is unchanged.
+
+     Critical design rules
+
+     1. Anomaly never mutates RecStatus. The flag stream and the status are
+     independent. A RED record from validation is still RED; an anomaly on a
+     GREEN record stays GREEN with an extra flag for the reviewer.
+     2. The orchestrator step is no-op for non-salaire or non-departement 
+     records. Missing salaire_brut or missing departement returns [] from
+     run_anomaly_check. This is important because extraction is allowed to
+     produce partial records (AMBER with missing_fields:*).
+     3. Baseline is built after the current job is saved to the repo. This is
+     implicit in the flow (routes_ingestion.py saves the JobState before
+     returning), so by the time run_anomaly_check reads the repository the new
+     record is included. The first-ever upload sees an empty baseline for its
+     department and returns BASELINE_UNAVAILABLE.
+     4. PyOD model caching is per-detector-instance, not global. The detectors
+     live inside service.py and are constructed fresh per run_anomaly_check call
+     — the cohort size is small, refit cost is negligible, and avoiding global
+     state sidesteps test-ordering bugs.
+
+     Reused functions / utilities (do not reinvent)
+
+     - Flag shape and projection to JobState.flags — already handled by
+     flags_from_strings() in app/ingestion/job_state.py:71. The anomaly flag
+     strings emitted by flags.py will flow through the same projector, so no new
+     projector code is needed.
+     - compose_status() in app/pipeline/status_composition.py — not called by
+     anomaly code. Status is set by validation; anomaly only adds flags.
+     - The repository seam app/ingestion/repository.py::IngestionJobRepository —
+     baseline.py reads it directly. No new repository type needed for demo
+     mode.
+
+     Verification
+
+     1. Targeted unit tests — pytest tests/anomalies/ -v:
+       - test_baseline.py covers grouping, min-size, skipping partial records.
+       - test_detectors.py covers deterministic scoring and consensus semantics.
+       - test_service.py covers end-to-end of run_anomaly_check against
+     synthetic cohorts.
+     2. Integration test — tests/anomalies/test_integration.py::test_pipeline_em
+     its_anomaly_flags_after_baseline_grows:
+       - Seed IngestionJobRepository with 6 synthetic records in department
+     "Engineering" with salaries [3000, 3200, 3100, 3050, 3150, 3250].
+       - Upload a 7th record with salary 12000 (clear outlier). Assert
+     JobState.flags contains flag_anomaly_salary rows for both detectors and
+     flag_anomaly_consensus.
+       - Assert JobState.statut is the same as it would have been without
+     anomaly (GREEN stays GREEN).
+       - Re-run with the same repo state but only 2 pre-existing records in the
+     department: assert flag_anomaly_baseline_unavailable is emitted instead.
+     3. Regression — pytest tests/ -q (full suite) must remain green.
+     Specifically watch tests/ingestion/test_tasks.py for accidental coupling.
+     4. Cloud-API grep (per AGENTS.md rule) — grep -rn "openai\|genai\|import 
+     google.generativeai\|anthropic" --include="*.py" app/anomalies/ must return
+     nothing.
+     5. Doc sync check — docs/runtime.md and CONTEXT.md both reference the new
+     module path; git diff on those files is part of the PR.
+
+● Agent "Explore anomaly detection integration points" finished · 7m 28s
+
+● The exploration agent finished and surfaced one material disagreement with my
+  plan that I need to reconcile.
+
+  The disagreement on whether anomaly can change RecStatus:
+
+  ┌───────────┬────────────────┬────────────────────────────────────────────┐
+  │           │    My plan     │              Agent's finding               │
+  ├───────────┼────────────────┼────────────────────────────────────────────┤
+  │ Status    │ Flags only,    │ Demote GREEN → AMBER when anomaly score is │
+  │ change    │ never mutate   │  high; RED stays sticky; AMBER stays AMBER │
+  └───────────┴────────────────┴────────────────────────────────────────────┘
+
+  I asked the user explicitly about this in Phase 1 and they chose "Flags only, 
+  status untouched (Recommended)". The user's decision is authoritative — flags
+  only.
+
+  However, the agent's framing of "anomaly contributes to extraction status only
+  via the worst-status-wins rule" is actually compatible with that choice if we
+  demote GREEN → AMBER in the extraction axis (not the final status). Hmm — but
+  the user explicitly said "flags only, never mutate." I'll respect that.
+
+  Let me also note two other findings I need to weigh:
+
+  1. Module-layout suggestion: Agent suggests result.py / detectors.py / 
+  cohort.py / baseline.py / orchestrator.py / config.py. My plan used score.py /
+  baseline.py / detectors.py / service.py / flags.py. The agent's layout is
+  more granular and mirrors app/ingestion/ better. I'll adopt it.
+  2. Configuration as Pydantic frozen config (AnomalyConfig): The agent suggests
+  adding AnomalyConfig to Settings and ExtractPipelineConfig. This is cleaner
+  and matches existing patterns — but it's a slight scope expansion. I'll keep
+  my minimal version (just MIN_COHORT_SIZE constant) for MVP and note
+  AnomalyConfig as a follow-up.
+
+  Let me set up tasks and start implementing.
+
+● Let me also verify the PyOD API surface I plan to use exists, and check if
+  there's a venv I should respect for runtime.
+
+● Bash(ls /c/Users/amessaoud/Desktop/hr-anomaly-scaffold/.venv 2>&1 | head -5;
+      echo "---"; python -c "from pyod.models.iforest import IForest; from
+      pyod.models.ecod im…)
+  ⎿  Error: Exit code 49
+     bin
+     include
+     lib
+     lib64
+     pyvenv.cfg
+     ---
+     Python was not found; run without arguments to install from the Microsoft 
+     Store, or disable this shortcut from Settings > Apps > Advanced app 
+     settings > App execution aliases.
+● Bash(python -c "import numpy, pandas, pandera, pyod; print(numpy.__version__,
+      pandas.__version__, pandera.__version__, pyod.__version__)" 2>&1)
+  ⎿  Error: Exit code 49
+     Python was not found; run without arguments to install from the Microsoft 
+     Store, or disable this shortcut from Settings > Apps > Advanced app 
+     settings > App execution aliases.
+
+❯ GO                                                                            
+
+● Python isn't on PATH from bash directly here — but the venv exists at .venv/.
+  Let me use it directly. The user said GO — proceeding with implementation.
+
+● Bash(.venv/Scripts/python -c "from pyod.models.iforest import IForest; from
+      pyod.models.ecod import ECOD; import numpy, pandas; print('pyod ok',
+      'numpy', numpy.__ver…)
+  ⎿  Interrupted · What should Claude do instead?
+
+❯ WSL VENV INSIDE IT                                                            
+
+● Understood — the venv is inside WSL, not on this Windows bash. Let me adapt:
+  I'll write the code (which is what you asked me to GO on) without depending on
+  running Python locally. The tests will run inside WSL where the venv lives.
+
+● Write(app\anomalies\__init__.py)
+  ⎿  Wrote 47 lines to app\anomalies\__init__.py
+       1 """Layer 4 — statistical anomaly detection.
+       2 
+       4 
+       5 - :func:`orchestrator.detect_anomalies` — the ``StageResult -> S
+         tageResult``
+         ``.
+       7 - :func:`baseline.get_default_baseline_store` — process-wide in-
+         memory
+       9 
+      10 Hard contract:
+     … +42 lines (ctrl+o to expand)
+
+● Write(app\anomalies\result.py)
+  ⎿  Wrote 100 lines to app\anomalies\result.py
+       1 """Result types and canonical flag vocabulary for Layer 4.
+       3 Mirrors :mod:`app.ingestion.extraction_result` — the orchestrato
+         r-level
+       4 flag stream stays string-shaped and additive (no compound names)
+       5 each ``AnomalyResult`` carries both a numeric score and a free-t
+         ext
+       7 
+       8 Flag string grammar (additive, parseable, never compound):
+       9 
+         t least
+     … +104 lines (ctrl+o to expand)
+
+● Write(app\anomalies\cohort.py)
+  ⎿  Wrote 37 lines to app\anomalies\cohort.py
+      1 """Cohort key extraction.
+      2 
+      3 The architecture doc (§2 Layer 4) recommends grouping by
+      4 ``departemenent / grade / site`` to avoid false positives from
+      5 legitimate inter-team differences. The current ``HRRecord`` schem
+        a
+      6 carries ``departement`` only — ``grade`` and ``site`` are not yet
+      7 modelled. The cohort key is therefore ``(departement,)`` for now.
+      8 
+      9 A future maintainer expanding the grouping should:
+     … +28 lines (ctrl+o to expand)
+
+● Now baseline.py:
+
+● Write(app\anomalies\baseline.py)
+  ⎿  Wrote 103 lines to app\anomalies\baseline.py
+      1 """In-memory cohort baseline store.
+      2 
+        —
+      4 demo-mode seam intended to be swapped for Postgres in full-stack 
+        mode.
+      6 The store holds, per cohort key, the list of ``salaire_brut`` val
+        ues
+      7 from validated records. Only validated records contribute (the
+        , so a
+      9 malformed or partial extraction can never pollute the baseline.
+     … +110 lines (ctrl+o to expand)
+
+● Now detectors.py. Critical: catch all exceptions internally, never raise
+  through orchestrator, deterministic with random_state for IForest.
+
+● Write(app\anomalies\detectors.py)
+  ⎿  Wrote 226 lines to app\anomalies\detectors.py
+       1 """PyOD-backed detectors for Layer 4.
+       2 
+       4 
+       5 - :class:`IsolationForestDetector` — Isolation Forest. Contamina
+         tion
+       7   deterministic. ``n_estimators`` is left at PyOD's default (100
+         ).
+       8 - :class:`ECODDetector` — ECOD (Empirical Cumulative Distributio
+       9   Functions for Outlier Detection). Parameter-free and stable on
+      10   small cohorts, which is why it is preferred over COPOD at MVP.
+     … +235 lines (ctrl+o to expand)
+  ⎿  Interrupted · What should Claude do instead?

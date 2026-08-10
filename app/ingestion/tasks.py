@@ -30,6 +30,7 @@ from app.ingestion.job_state import (
 from app.ingestion.rapidocr_path import extract_with_rapidocr
 from app.ingestion.schemas import HRRecord, RecStatus
 from app.pipeline.completeness import missing_required_fields
+from app.pipeline.data_validation import validate_hr_record
 from app.pipeline.status_composition import compose_status
 
 logger = logging.getLogger(__name__)
@@ -53,6 +54,7 @@ class StageResult:
     record: dict[str, object] | None = None
     flags: tuple[str, ...] = ()
     erreur_traitement: str | None = None
+    anomaly_results: tuple[dict[str, object], ...] = ()
 
     @classmethod
     def from_extraction(
@@ -110,6 +112,20 @@ def ingest_document(
             terminal=True,
             statut=RecStatus.RED,
             erreur_traitement=ERR_FILE_MISSING,
+        )
+    from app.ingestion.file_validation import validate_file_content, validate_file_metadata
+
+    metadata = validate_file_metadata(document_path, max_bytes=Settings().max_upload_size_bytes)
+    if not metadata.valid:
+        return StageResult(
+            doc_id=doc_id, revision=revision, terminal=True, statut=RecStatus.RED,
+            erreur_traitement=metadata.code,
+        )
+    content = validate_file_content(document_path)
+    if not content.valid:
+        return StageResult(
+            doc_id=doc_id, revision=revision, terminal=True, statut=RecStatus.RED,
+            erreur_traitement=content.code,
         )
     return StageResult(doc_id=doc_id, revision=revision)
 
@@ -325,15 +341,19 @@ def validate_record(stage: StageResult) -> StageResult:
 
     validation_status = RecStatus.GREEN
     final_status = compose_status(stage.statut if stage.statut is not None else RecStatus.RED, validation_status)
+    validation_anomalies = tuple(validate_hr_record(record.model_dump(mode="json")))
 
     return StageResult(
         doc_id=stage.doc_id,
         revision=stage.revision,
-        terminal=True,
+        # A validated record is ready for advisory anomaly detection. Only
+        # failed extraction/validation stages are terminal.
+        terminal=False,
         statut=final_status,
         record=record.model_dump(mode="json"),
         flags=stage.flags,
         erreur_traitement=record.erreur_traitement,
+        anomaly_results=validation_anomalies,
     )
 
 

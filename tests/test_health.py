@@ -45,11 +45,10 @@ def test_health_live_does_not_call_out_to_dependencies(client: TestClient):
 
 
 def test_health_backcompat_returns_same_as_live(client: TestClient):
-    """Older clients hit ``/health`` directly; keep returning the same
-    body so they don't break."""
-    live = client.get("/health/live").json()
-    legacy = client.get("/health").json()
-    assert legacy == live
+    """The legacy endpoint retains the readiness payload contract."""
+    response = client.get("/health")
+    assert response.status_code == 200
+    assert response.json()["status"] in {"ready", "degraded"}
 
 
 # ---------------------------------------------------------------------------

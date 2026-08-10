@@ -24,7 +24,8 @@ from typing import Any
 from fastapi import APIRouter
 from fastapi.responses import JSONResponse
 
-from app.core.config import Settings
+from app.core.config import ExtractPipelineConfig, Settings, make_extract_pipeline_config
+from app.core import health as core_health
 
 logger = logging.getLogger(__name__)
 
@@ -38,19 +39,19 @@ def _check_docling() -> tuple[bool, str | None]:
     dependency is unavailable, and is short enough to surface in a
     dashboard tile.
     """
-    try:
-        from docling.document_converter import DocumentConverter  # noqa: F401
-    except ImportError as exc:
-        return False, f"docling import failed: {exc}"
-    return True, None
+    if core_health._docling_importable():
+        return True, None
+    return False, "docling import failed"
 
 
-def _check_rapidocr(settings: Settings) -> tuple[bool, str | None]:
+def _check_rapidocr(config: ExtractPipelineConfig) -> tuple[bool, str | None]:
     """Optional dep: RapidOCR (onnxruntime). Reported as down in demo mode but
     does not flip readiness to 503."""
-    if not settings.rapidocr_enabled:
+    if not config.rapidocr_enabled:
         return True, "rapidocr disabled by config"
-    return True, None
+    if core_health._rapidocr_importable(config):
+        return True, None
+    return False, "rapidocr import failed"
 
 
 def _build_readiness_payload() -> dict[str, Any]:
@@ -61,23 +62,27 @@ def _build_readiness_payload() -> dict[str, Any]:
     keys without parsing free-form text.
     """
     settings = Settings()
+    config = make_extract_pipeline_config(settings)
     checks: dict[str, dict[str, Any]] = {}
 
     docling_ok, docling_detail = _check_docling()
     checks["docling"] = {
         "status": "up" if docling_ok else "down",
+        "available": docling_ok,
         "required": True,
     }
     if docling_detail:
         checks["docling"]["detail"] = docling_detail
 
-    rapidocr_ok, rapidocr_detail = _check_rapidocr(settings)
+    rapidocr_ok, rapidocr_detail = _check_rapidocr(config)
     rapidocr_status = "disabled" if (rapidocr_detail == "rapidocr disabled by config") else (
         "up" if rapidocr_ok else "down"
     )
     checks["rapidocr"] = {
         "status": rapidocr_status,
+        "available": rapidocr_ok,
         "required": False,
+        "enabled": config.rapidocr_enabled,
     }
     if rapidocr_detail:
         checks["rapidocr"]["detail"] = rapidocr_detail
@@ -86,8 +91,11 @@ def _build_readiness_payload() -> dict[str, Any]:
     degraded = not rapidocr_ok
 
     payload: dict[str, Any] = {
-        "status": "ok" if hard_ok else "down",
-        "mode": "docling_only_demo" if not settings.rapidocr_enabled else "demo_with_rapidocr",
+        "status": "ready" if hard_ok and not degraded else (
+            "degraded" if hard_ok else "not_ready"
+        ),
+        "app": settings.app_name,
+        "mode": "docling_only_demo" if not config.rapidocr_enabled else "demo_with_rapidocr",
         "checks": checks,
     }
     if degraded:
@@ -98,14 +106,14 @@ def _build_readiness_payload() -> dict[str, Any]:
 @router.get("/health/live")
 async def health_live() -> dict[str, str]:
     """Process-only liveness probe. Always 200 unless the server is wedged."""
-    return {"status": "ok"}
+    return {"status": "ok", "app": Settings().app_name}
 
 
 @router.get("/health/ready")
 async def health_ready() -> JSONResponse:
     """Mode-aware readiness probe. 503 iff a hard dep is missing."""
     payload = _build_readiness_payload()
-    status_code = 200 if payload["status"] == "ok" else 503
+    status_code = 503 if payload["status"] == "not_ready" else 200
     return JSONResponse(content=payload, status_code=status_code)
 
 
