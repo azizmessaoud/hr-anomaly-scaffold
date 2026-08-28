@@ -13,7 +13,6 @@ import argparse
 import json
 import logging
 import sys
-from dataclasses import asdict
 from pathlib import Path
 
 logging.basicConfig(
@@ -53,6 +52,12 @@ def _split_text_fields(raw_text: str) -> dict[str, str]:
 
 def diagnose(file_path: Path, engine: str = "both") -> dict:
     """Run diagnostics on a PDF file."""
+    from app.ingestion.doc_id import generate_doc_id
+
+    # A diagnostic run is not persisted as an ingestion job, but the extractor
+    # contract still requires a surrogate identity for traceability. Reuse one
+    # ID across both engines so their results can be compared directly.
+    doc_id = generate_doc_id()
     results: dict = {"file": str(file_path), "engine": engine}
 
     if engine in ("docling", "both"):
@@ -62,7 +67,7 @@ def diagnose(file_path: Path, engine: str = "both") -> dict:
 
         settings = Settings()
         cfg = make_extract_pipeline_config(settings)
-        docling_res = extract_from_docling(file_path, config=cfg)
+        docling_res = extract_from_docling(file_path, config=cfg, doc_id=doc_id)
         results["docling"] = {
             "succeeded": docling_res.succeeded,
             "erreur_traitement": docling_res.erreur_traitement,
@@ -91,7 +96,7 @@ def diagnose(file_path: Path, engine: str = "both") -> dict:
 
         settings = Settings()
         cfg = make_extract_pipeline_config(settings)
-        rapidocr_res = extract_with_rapidocr(file_path, config=cfg, doc_id="diag")
+        rapidocr_res = extract_with_rapidocr(file_path, config=cfg, doc_id=doc_id)
         results["rapidocr"] = {
             "succeeded": rapidocr_res.succeeded,
             "erreur_traitement": rapidocr_res.erreur_traitement,
