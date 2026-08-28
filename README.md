@@ -47,26 +47,26 @@ a SIRH.
 
 ```mermaid
 flowchart TD
-    Client[Client or RH reviewer] -->|POST /ingest/upload| API[FastAPI application]
+    Client[Client or RH reviewer] -->|"POST /ingest/upload"| API[FastAPI application]
     API --> Preflight[Upload pre-flight checks]
-    Preflight -->|invalid| Failed[Rejected input / RED JobState]
-    Preflight -->|PDF or image| Ingest[ingest_document]
+    Preflight -->|"invalid"| Failed[Rejected input / RED JobState]
+    Preflight -->|"PDF or image"| Ingest[ingest_document]
     Ingest --> Docling[Docling extraction]
-    Docling --> Decision{Usable and confidence >= threshold?}
-    Decision -->|yes| Record[Canonical HRRecord]
-    Decision -->|no| RapidOCR[RapidOCR fallback]
+    Docling --> Decision{"Usable and confidence >= threshold?"}
+    Decision -->|"yes"| Record[Canonical HRRecord]
+    Decision -->|"no"| RapidOCR[RapidOCR fallback]
     RapidOCR --> Keep{Fallback succeeded?}
-    Keep -->|yes| Record
-    Keep -->|no, Docling usable| Reviewable[Preserve Docling result / AMBER]
-    Keep -->|no usable result| Failed
+    Keep -->|"yes"| Record
+    Keep -->|"no, Docling usable"| Reviewable[Preserve Docling result / AMBER]
+    Keep -->|"no usable result"| Failed
     Reviewable --> Validate[Schema and business validation]
     Record --> Validate
     Validate --> Anomalies[Deterministic + statistical anomaly detection]
     Anomalies --> Aggregate[Aggregate flags and explainable details]
     Aggregate --> Job[JobState in memory]
     Aggregate --> Report[AnalysisReport]
-    Job -->|GET /ingest/{doc_id}| Client
-    Report -->|GET /ingest/{doc_id}/report| Client
+    Job -->|"GET /ingest/{doc_id}"| Client
+    Report -->|"GET /ingest/{doc_id}/report"| Client
     Failed --> Client
 ```
 
@@ -125,15 +125,15 @@ The report maps these internal values to stable business labels:
 ```mermaid
 flowchart LR
     Start[Uploaded file] --> Valid{Pre-flight valid?}
-    Valid -->|no| F[FAILED / RED]
-    Valid -->|yes| Extract{Usable extraction?}
-    Extract -->|no| T[Technical failure]
+    Valid -->|"no"| F[FAILED / RED]
+    Valid -->|"yes"| Extract{"Usable extraction?"}
+    Extract -->|"no"| T[Technical failure]
     T --> F
-    Extract -->|yes| Rules{Blocking validation anomaly?}
-    Rules -->|yes| R[REJECTED / RED]
-    Rules -->|no| Signals{Warnings, low confidence, or anomaly flags?}
-    Signals -->|yes| Review[REVIEW_REQUIRED / AMBER]
-    Signals -->|no| Accepted[ACCEPTED / GREEN]
+    Extract -->|"yes"| Rules{"Blocking validation anomaly?"}
+    Rules -->|"yes"| R[REJECTED / RED]
+    Rules -->|"no"| Signals{"Warnings, low confidence, or anomaly flags?"}
+    Signals -->|"yes"| Review[REVIEW_REQUIRED / AMBER]
+    Signals -->|"no"| Accepted[ACCEPTED / GREEN]
 ```
 
 ## What is implemented
