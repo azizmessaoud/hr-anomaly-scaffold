@@ -1,5 +1,38 @@
 # HR Anomaly Detection Pipeline
 
+## Final-year project quick start
+
+Local, self-hosted HR document anomaly detection before human approval. The
+runtime is synchronous FastAPI with in-memory jobs and baselines.
+
+```text
+PDF/image -> validation -> Docling native text -> RapidOCR fallback
+          -> normalization/validation -> cohort anomaly detection -> report
+```
+
+Supported inputs: `.pdf`, `.png`, `.jpg`, `.jpeg`, `.webp`, `.tif`, `.tiff`,
+and `.bmp`. CSV/Excel are outside the current OCR contract. The system never
+automatically writes to an HRIS.
+
+## Fastest reviewer path
+
+```bash
+python3.11 -m venv .venv
+source .venv/bin/activate
+python -m pip install --upgrade pip
+python -m pip install -e '.[main,dev]'
+./scripts/run_focused_tests.sh
+python scripts/ingest_directory.py data/synthetic --output-dir outputs/reports
+```
+
+The directory command prints each status and writes one JSON job/report file
+per sample under `outputs/reports/`. API jobs and baselines are in memory;
+the JSON files are the durable demo output.
+
+See [`ARCHITECTURE.md`](ARCHITECTURE.md) and
+[`DEPLOYMENT.md`](DEPLOYMENT.md) for the layer design, configuration, Docker
+option, health checks, and integration-test guidance.
+
 Local, self-hosted pipeline for checking anonymised HR documents before a
 human reviewer decides whether they can be integrated into an HR information
 system (SIRH). The current runtime is a synchronous FastAPI demo using an
