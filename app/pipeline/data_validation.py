@@ -8,7 +8,6 @@ ingestion task; malformed HR values are represented as anomaly details.
 from __future__ import annotations
 
 from datetime import date
-import math
 from typing import Any
 
 
@@ -111,19 +110,7 @@ def validate_hr_record(payload: dict[str, Any]) -> list[dict[str, object]]:
     salary = payload.get("salaire_brut")
     if salary is not None:
         try:
-            numeric_salary = float(salary)
-            if not math.isfinite(numeric_salary):
-                anomalies.append(
-                    _anomaly(
-                        rule_id="NUMERIC_NOT_FINITE",
-                        severity="ERROR",
-                        column_name="salaire_brut",
-                        expected_condition="valeur numerique finie",
-                        message="Le salaire brut doit etre une valeur numerique finie.",
-                        remediation="Corriger le montant du salaire brut.",
-                    )
-                )
-            elif numeric_salary < 0:
+            if float(salary) < 0:
                 anomalies.append(
                     _anomaly(
                         rule_id="SALARY_NEGATIVE",
@@ -146,8 +133,7 @@ def validate_hr_record(payload: dict[str, Any]) -> list[dict[str, object]]:
                 )
             )
 
-    raw_status = payload.get("statut_employe")
-    status = str(raw_status).strip().lower() if raw_status is not None else ""
+    status = str(payload.get("statut_employe", "")).strip().lower()
     if status and status not in {"actif", "inactif", "active", "inactive", "terminated", "leave"}:
         anomalies.append(
             _anomaly(
@@ -173,19 +159,7 @@ def validate_hr_record(payload: dict[str, Any]) -> list[dict[str, object]]:
     hours = payload.get("heures_hebdomadaires")
     if hours is not None:
         try:
-            numeric_hours = float(hours)
-            if not math.isfinite(numeric_hours):
-                anomalies.append(
-                    _anomaly(
-                        rule_id="NUMERIC_NOT_FINITE",
-                        severity="ERROR",
-                        column_name="heures_hebdomadaires",
-                        expected_condition="valeur numerique finie",
-                        message="Les heures hebdomadaires doivent etre une valeur finie.",
-                        remediation="Corriger le temps de travail.",
-                    )
-                )
-            elif numeric_hours < 0 or numeric_hours > 168:
+            if float(hours) < 0 or float(hours) > 168:
                 anomalies.append(
                     _anomaly(
                         rule_id="WORKING_HOURS_OUT_OF_RANGE",

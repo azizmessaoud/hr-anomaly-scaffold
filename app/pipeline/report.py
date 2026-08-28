@@ -21,7 +21,7 @@ class AnomalyDetail(BaseModel):
     message: str
     remediation: str
     detector: str
-    score: float | None = Field(default=None, ge=0.0, le=1.0)
+    score: float = Field(ge=0.0, le=1.0)
 
 
 class ReportSummary(BaseModel):
@@ -50,8 +50,6 @@ def _severity_for_flag(flag: str) -> str:
         return "ERROR"
     if flag.startswith("validation_failed") or flag.startswith("docling_parse_failed"):
         return "CRITICAL"
-    if flag.startswith("anomaly_detector_failed"):
-        return "ERROR"
     return "WARNING"
 
 
@@ -101,12 +99,7 @@ def build_report(stage: Any) -> AnalysisReport:
     for detail in details:
         key = (detail.get("rule_id"), detail.get("column_name"), detail.get("message"))
         unique.setdefault(key, detail)
-    projected: list[AnomalyDetail] = []
-    for item in list(unique.values())[:500]:
-        # A detector failure has no meaningful numeric score. Preserve null
-        # rather than presenting a technical failure as a measured score.
-        item.setdefault("document_id", stage.doc_id)
-        projected.append(AnomalyDetail(**item))
+    projected = [AnomalyDetail(**item) for item in list(unique.values())[:500]]
     severe = {"ERROR", "CRITICAL"}
     if stage.erreur_traitement and stage.record is None:
         status: Literal["ACCEPTED", "REVIEW_REQUIRED", "REJECTED", "FAILED"] = "FAILED"

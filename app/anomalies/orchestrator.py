@@ -29,7 +29,7 @@ from typing import Sequence
 
 from app.anomalies.baseline import CohortBaselineStore, get_default_baseline_store
 from app.anomalies.cohort import cohort_key
-from app.anomalies.detectors import _PyODDetector, make_default_detectors
+from app.anomalies.detectors import DEFAULT_DETECTORS, _PyODDetector
 from app.anomalies.result import (
     AnomalyCheckOutcome,
     flag_anomaly_baseline_insufficient,
@@ -97,9 +97,7 @@ def detect_anomalies(
         return stage
 
     store = baseline_store or get_default_baseline_store()
-    active_detectors = (
-        list(detectors) if detectors is not None else list(make_default_detectors())
-    )
+    active_detectors = list(detectors or DEFAULT_DETECTORS)
 
     new_flags = list(stage.flags)
     any_anomalous = False

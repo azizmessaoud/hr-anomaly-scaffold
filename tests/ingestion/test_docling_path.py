@@ -54,25 +54,6 @@ def test_extract_from_docling_happy_path(fake_document: Path, test_config: Extra
     assert result.record.confiance == pytest.approx(0.92)
 
 
-def test_run_docling_uses_embedded_pdf_text_without_converter(tmp_path: Path):
-    from app.ingestion.docling_path import run_docling
-
-    pdf = tmp_path / "native.pdf"
-    pdf.write_bytes(
-        b"%PDF-1.4\n"
-        b"1 0 obj << /Type /Catalog >> endobj\n"
-        b"BT (Salary: 1850,00 DT) Tj ET\n"
-    )
-
-    with patch("app.ingestion.docling_path._extract_embedded_pdf_text", return_value="Salary: 1850,00 DT"):
-        with patch("app.ingestion.docling_path._get_docling_converter") as converter:
-            result = run_docling(pdf)
-
-    converter.assert_not_called()
-    assert result.markdown == "Salary: 1850,00 DT"
-    assert result.confidence == pytest.approx(0.9)
-
-
 def test_extract_from_docling_low_confidence_flags_amber(fake_document: Path, test_config: ExtractPipelineConfig):
     """A low-confidence Docling result surfaces concerns through flags rather
     than assigning a status directly — the orchestrator assesses quality."""

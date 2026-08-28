@@ -1,38 +1,5 @@
 # HR Anomaly Detection Pipeline
 
-## Final-year project quick start
-
-Local, self-hosted HR document anomaly detection before human approval. The
-runtime is synchronous FastAPI with in-memory jobs and baselines.
-
-```text
-PDF/image -> validation -> Docling native text -> RapidOCR fallback
-          -> normalization/validation -> cohort anomaly detection -> report
-```
-
-Supported inputs: `.pdf`, `.png`, `.jpg`, `.jpeg`, `.webp`, `.tif`, `.tiff`,
-and `.bmp`. CSV/Excel are outside the current OCR contract. The system never
-automatically writes to an HRIS.
-
-## Fastest reviewer path
-
-```bash
-python3.11 -m venv .venv
-source .venv/bin/activate
-python -m pip install --upgrade pip
-python -m pip install -e '.[main,dev]'
-./scripts/run_focused_tests.sh
-python scripts/ingest_directory.py data/synthetic --output-dir outputs/reports
-```
-
-The directory command prints each status and writes one JSON job/report file
-per sample under `outputs/reports/`. API jobs and baselines are in memory;
-the JSON files are the durable demo output.
-
-See [`ARCHITECTURE.md`](ARCHITECTURE.md) and
-[`DEPLOYMENT.md`](DEPLOYMENT.md) for the layer design, configuration, Docker
-option, health checks, and integration-test guidance.
-
 Local, self-hosted pipeline for checking anonymised HR documents before a
 human reviewer decides whether they can be integrated into an HR information
 system (SIRH). The current runtime is a synchronous FastAPI demo using an
@@ -47,26 +14,26 @@ a SIRH.
 
 ```mermaid
 flowchart TD
-    Client[Client or RH reviewer] -->|POST /ingest/upload| API[FastAPI application]
+    Client[Client or RH reviewer] -->|"POST /ingest/upload"| API[FastAPI application]
     API --> Preflight[Upload pre-flight checks]
-    Preflight -->|invalid| Failed[Rejected input / RED JobState]
-    Preflight -->|PDF or image| Ingest[ingest_document]
+    Preflight -->|"invalid"| Failed[Rejected input / RED JobState]
+    Preflight -->|"PDF or image"| Ingest[ingest_document]
     Ingest --> Docling[Docling extraction]
-    Docling --> Decision{Usable and confidence >= threshold?}
-    Decision -->|yes| Record[Canonical HRRecord]
-    Decision -->|no| RapidOCR[RapidOCR fallback]
-    RapidOCR --> Keep{Fallback succeeded?}
-    Keep -->|yes| Record
-    Keep -->|no, Docling usable| Reviewable[Preserve Docling result / AMBER]
-    Keep -->|no usable result| Failed
+    Docling --> Decision{"Usable and confidence >= threshold?"}
+    Decision -->|"yes"| Record[Canonical HRRecord]
+    Decision -->|"no"| RapidOCR[RapidOCR fallback]
+    RapidOCR --> Keep{"Fallback succeeded?"}
+    Keep -->|"yes"| Record
+    Keep -->|"no, Docling usable"| Reviewable[Preserve Docling result / AMBER]
+    Keep -->|"no usable result"| Failed
     Reviewable --> Validate[Schema and business validation]
     Record --> Validate
     Validate --> Anomalies[Deterministic + statistical anomaly detection]
     Anomalies --> Aggregate[Aggregate flags and explainable details]
     Aggregate --> Job[JobState in memory]
     Aggregate --> Report[AnalysisReport]
-    Job -->|GET /ingest/{doc_id}| Client
-    Report -->|GET /ingest/{doc_id}/report| Client
+    Job -->|"GET /ingest/{doc_id}"| Client
+    Report -->|"GET /ingest/{doc_id}/report"| Client
     Failed --> Client
 ```
 
@@ -124,16 +91,16 @@ The report maps these internal values to stable business labels:
 
 ```mermaid
 flowchart LR
-    Start[Uploaded file] --> Valid{Pre-flight valid?}
-    Valid -->|no| F[FAILED / RED]
-    Valid -->|yes| Extract{Usable extraction?}
-    Extract -->|no| T[Technical failure]
+    Start[Uploaded file] --> Valid{"Pre-flight valid?"}
+    Valid -->|"no"| F[FAILED / RED]
+    Valid -->|"yes"| Extract{"Usable extraction?"}
+    Extract -->|"no"| T[Technical failure]
     T --> F
-    Extract -->|yes| Rules{Blocking validation anomaly?}
-    Rules -->|yes| R[REJECTED / RED]
-    Rules -->|no| Signals{Warnings, low confidence, or anomaly flags?}
-    Signals -->|yes| Review[REVIEW_REQUIRED / AMBER]
-    Signals -->|no| Accepted[ACCEPTED / GREEN]
+    Extract -->|"yes"| Rules{"Blocking validation anomaly?"}
+    Rules -->|"yes"| R[REJECTED / RED]
+    Rules -->|"no"| Signals{"Warnings, low confidence, or anomaly flags?"}
+    Signals -->|"yes"| Review[REVIEW_REQUIRED / AMBER]
+    Signals -->|"no"| Accepted[ACCEPTED / GREEN]
 ```
 
 ## What is implemented

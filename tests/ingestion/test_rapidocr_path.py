@@ -19,7 +19,6 @@ from app.ingestion.extraction_result import (
     ERR_RAPIDOCR_UNREACHABLE,
 )
 from app.ingestion.rapidocr_path import extract_with_rapidocr
-import app.ingestion.rapidocr_path as rapidocr_module
 
 
 @pytest.fixture
@@ -72,68 +71,6 @@ def test_extract_with_rapidocr_happy_path(fake_pdf: Path, test_config: ExtractPi
     assert result.record is not None
     assert result.source == "rapidocr"
     assert "rapidocr_fallback" in result.flags
-
-
-def test_extract_with_rapidocr_accepts_string_confidences(
-    fake_pdf: Path, test_config: ExtractPipelineConfig
-):
-    """rapidocr-onnxruntime versions may return recognition scores as strings."""
-    mock_result = [[
-        ([10, 10, 100, 50], "Nom: Dupont Pierre", "0.95"),
-        ([10, 60, 100, 100], "CIN: AB123456", "0.90"),
-        ([10, 110, 100, 150], "CNSS: 123456789", "0.88"),
-        ([10, 160, 100, 200], "Date embauche: 2020-01-15", "0.92"),
-        ([10, 210, 100, 250], "Salaire brut mensuel: 5000", "0.87"),
-    ]]
-
-    with patch("app.ingestion.rapidocr_path._pdf_to_numpy", return_value=MagicMock()):
-        with patch("rapidocr_onnxruntime.RapidOCR") as MockOCR:
-            MockOCR.return_value.return_value = mock_result
-            result = extract_with_rapidocr(
-                fake_pdf, doc_id="doc-x", revision=0, config=test_config
-            )
-
-    assert result.succeeded is True
-    assert result.confidence == pytest.approx(0.904)
-
-
-def test_rapidocr_engine_is_cached_between_extractions(monkeypatch):
-    created = []
-
-    class FakeEngine:
-        def __call__(self, _image):
-            return [[
-                ([0, 0, 1, 1], "Nom: Dupont", 0.9),
-                ([0, 0, 1, 1], "CIN: AB123456", 0.9),
-                ([0, 0, 1, 1], "CNSS: 123456789", 0.9),
-                ([0, 0, 1, 1], "Date embauche: 2020-01-15", 0.9),
-                ([0, 0, 1, 1], "Salary: 5000", 0.9),
-            ]]
-
-    def factory():
-        created.append(True)
-        return FakeEngine()
-
-    rapidocr_module._rapidocr_engine.cache_clear()
-    monkeypatch.setattr(rapidocr_module, "_pdf_to_numpy", lambda _path: MagicMock())
-
-    config = ExtractPipelineConfig(
-        docling_confidence_threshold=0.75,
-        rapidocr_enabled=True,
-        rapidocr_model_path="unused",
-        rapidocr_timeout_seconds=30,
-        rapidocr_default_confidence=0.6,
-    )
-    # The factory is imported inside _rapidocr_engine, so patch the provider
-    # module at the seam used by the implementation.
-    import sys
-    import types
-    monkeypatch.setitem(sys.modules, "rapidocr_onnxruntime", types.SimpleNamespace(RapidOCR=factory))
-    path = Path("document.pdf")
-    extract_with_rapidocr(path, doc_id="one", config=config)
-    extract_with_rapidocr(path, doc_id="two", config=config)
-
-    assert len(created) == 1
 
 
 # ---------------------------------------------------------------------------

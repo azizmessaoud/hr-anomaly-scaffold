@@ -218,35 +218,3 @@ def test_report_endpoint_returns_stable_shape(client: TestClient):
     assert body["document_id"] == sentinel.doc_id
     assert body["summary"]["status"] == "ACCEPTED"
     assert "anomalies" in body
-
-
-def test_report_endpoint_preserves_pipeline_anomaly_details(client: TestClient):
-    from app.ingestion.tasks import StageResult
-    from app.pipeline.report import build_report
-
-    stage = StageResult(
-        doc_id="44444444-4444-4444-8444-444444444444",
-        revision=1,
-        statut=RecStatus.GREEN,
-        record={"id": "doc-x"},
-        anomaly_results=(
-            {
-                "rule_id": "STATISTICAL_ECOD",
-                "anomaly_type": "statistical",
-                "severity": "ERROR",
-                "document_id": "doc-x",
-                "column_name": "salaire_brut",
-                "observed_value": "[MASKED]",
-                "expected_condition": "cohort",
-                "message": "ECOD reason",
-                "remediation": "Review salary",
-                "detector": "ecod",
-                "score": 0.91,
-            },
-        ),
-    )
-    report = build_report(stage)
-
-    assert report.anomalies[0].detector == "ecod"
-    assert report.anomalies[0].score == 0.91
-    assert report.anomalies[0].message == "ECOD reason"

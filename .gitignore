@@ -15,18 +15,6 @@ dist/
 build/
 .env
 *.log
-*.sqlite3
-*.db
-outputs/
-reports/
-models/
-*.onnx
-*.bin
-*.pt
-*.safetensors
-*.whl
-*.ipynb_checkpoints/
-.DS_Store
 
 # Local agent/session state and temporary runtime data
 .backboard/

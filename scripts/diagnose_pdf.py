@@ -32,22 +32,19 @@ if str(ROOT) not in sys.path:
 def _split_text_fields(raw_text: str) -> dict[str, str]:
     """Show regex parsing results on raw text."""
     from app.ingestion.parser_regex import (
-        extract_cin,
-        extract_cnss,
-        extract_date_embauche,
-        extract_nom_prenom,
-        extract_salaire_brut,
+        parse_cin,
+        parse_cnss,
+        parse_date_embauche,
+        parse_name,
+        parse_salaire,
     )
 
-    nom, prenom = extract_nom_prenom(raw_text)
-
     return {
-        "nom": nom,
-        "prenom": prenom,
-        "cin": extract_cin(raw_text),
-        "cnss": extract_cnss(raw_text),
-        "date_embauche": extract_date_embauche(raw_text),
-        "salaire": extract_salaire_brut(raw_text),
+        "name": parse_name(raw_text),
+        "cin": parse_cin(raw_text),
+        "cnss": parse_cnss(raw_text),
+        "date_embauche": parse_date_embauche(raw_text),
+        "salaire": parse_salaire(raw_text),
     }
 
 

@@ -31,7 +31,6 @@ from app.ingestion.rapidocr_path import extract_with_rapidocr
 from app.ingestion.schemas import HRRecord, RecStatus
 from app.pipeline.completeness import missing_required_fields
 from app.pipeline.data_validation import validate_hr_record
-from app.pipeline.report import build_report, get_report_repository
 from app.pipeline.status_composition import compose_status
 
 logger = logging.getLogger(__name__)
@@ -67,16 +66,12 @@ class StageResult:
         statut: RecStatus,
     ) -> StageResult:
         if result.succeeded and result.record is not None:
-            record = result.record.model_dump(mode="json")
-            record["id"] = doc_id
-            record["revision"] = revision
-            record["statut"] = statut
             return cls(
                 doc_id=doc_id,
                 revision=revision,
                 terminal=False,
                 statut=statut,
-                record=record,
+                record=result.record.model_dump(mode="json"),
                 flags=result.flags,
                 erreur_traitement=None,
             )
@@ -98,7 +93,7 @@ def _determine_extraction_status(
     if not result.succeeded or result.record is None:
         return RecStatus.RED
     record = result.record
-    if result.confidence < threshold:
+    if result.source == "docling" and result.confidence < threshold:
         return RecStatus.AMBER
     if missing_required_fields(record):
         return RecStatus.AMBER
@@ -192,12 +187,7 @@ def _stage_from_docling_preserved(
         revision=revision,
         terminal=False,
         statut=extraction_status,
-        record={
-            **docling_result.record.model_dump(mode="json"),
-            "id": doc_id,
-            "revision": revision,
-            "statut": extraction_status,
-        },
+        record=docling_result.record.model_dump(mode="json"),
         flags=_combine_flags(docling_result.flags, tuple(extra)),
         erreur_traitement=None,
     )
@@ -349,24 +339,9 @@ def validate_record(stage: StageResult) -> StageResult:
             erreur_traitement=f"validation_failed:{type(exc).__name__}",
         )
 
-    validation_anomalies = tuple(validate_hr_record(record.model_dump(mode="json")))
-    has_error = any(
-        anomaly.get("severity") in {"ERROR", "CRITICAL"}
-        for anomaly in validation_anomalies
-    )
-    # Deterministic validation is a status axis: errors are blocking RED,
-    # warnings require review AMBER, and informational findings stay GREEN.
-    if has_error:
-        validation_status = RecStatus.RED
-    elif any(anomaly.get("severity") == "WARNING" for anomaly in validation_anomalies):
-        validation_status = RecStatus.AMBER
-    else:
-        validation_status = RecStatus.GREEN
+    validation_status = RecStatus.GREEN
     final_status = compose_status(stage.statut if stage.statut is not None else RecStatus.RED, validation_status)
-    record_dict = record.model_dump(mode="json")
-    record_dict["id"] = stage.doc_id
-    record_dict["revision"] = stage.revision
-    record_dict["statut"] = final_status
+    validation_anomalies = tuple(validate_hr_record(record.model_dump(mode="json")))
 
     return StageResult(
         doc_id=stage.doc_id,
@@ -375,7 +350,7 @@ def validate_record(stage: StageResult) -> StageResult:
         # failed extraction/validation stages are terminal.
         terminal=False,
         statut=final_status,
-        record=record_dict,
+        record=record.model_dump(mode="json"),
         flags=stage.flags,
         erreur_traitement=record.erreur_traitement,
         anomaly_results=validation_anomalies,
@@ -410,23 +385,17 @@ def run_ingestion_pipeline(
     doc_id: str,
     revision: int = INITIAL_REVISION,
 ) -> JobState:
-    def finalize(stage: StageResult) -> JobState:
-        # Build once from the complete stage so API retrieval does not have to
-        # reconstruct and discard validation/statistical anomaly details.
-        get_report_repository().save(build_report(stage))
-        return stage_to_job_state(stage)
-
     ingest_stage = ingest_document(document_path, doc_id, revision)
     if ingest_stage.terminal:
-        return finalize(ingest_stage)
+        return stage_to_job_state(ingest_stage)
 
     extract_stage = extract_fields(document_path, doc_id, revision)
     if extract_stage.terminal:
-        return finalize(extract_stage)
+        return stage_to_job_state(extract_stage)
 
     validate_stage = validate_record(extract_stage)
 
     from app.anomalies.orchestrator import detect_anomalies
 
     anomaly_stage = detect_anomalies(validate_stage)
-    return finalize(anomaly_stage)
+    return stage_to_job_state(anomaly_stage)

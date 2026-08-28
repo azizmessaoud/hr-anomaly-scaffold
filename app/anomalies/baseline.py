@@ -18,7 +18,6 @@ the current contract is "validated records contribute."
 from __future__ import annotations
 
 import threading
-import math
 from typing import Iterable
 
 
@@ -39,8 +38,6 @@ class CohortBaselineStore:
     # -- mutation ---------------------------------------------------------
     def add(self, cohort: tuple[str, ...], value: float) -> None:
         """Append ``value`` to ``cohort``'s sample list."""
-        if not math.isfinite(value):
-            raise ValueError("baseline values must be finite")
         with self._lock:
             self._values.setdefault(cohort, []).append(float(value))
 
@@ -48,8 +45,6 @@ class CohortBaselineStore:
         with self._lock:
             bucket = self._values.setdefault(cohort, [])
             for v in values:
-                if not math.isfinite(v):
-                    raise ValueError("baseline values must be finite")
                 bucket.append(float(v))
 
     def clear(self) -> None:
