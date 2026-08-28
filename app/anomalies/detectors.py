@@ -219,8 +219,12 @@ class ECODDetector(_PyODDetector):
         )
 
 
-# Public list of detectors the orchestrator runs by default.
-DEFAULT_DETECTORS: tuple[type[_PyODDetector], ...] = (
-    IsolationForestDetector,
-    ECODDetector,
-)
+def make_default_detectors() -> tuple[_PyODDetector, ...]:
+    """Return fresh instances for one anomaly-detection invocation."""
+    return IsolationForestDetector(), ECODDetector()
+
+
+# Public detector instances retained for compatibility with callers that
+# inspect the default set. The orchestrator uses the factory above so fitted
+# model state is not shared between documents or cohorts.
+DEFAULT_DETECTORS: tuple[_PyODDetector, ...] = make_default_detectors()

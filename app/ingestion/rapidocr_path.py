@@ -1,8 +1,9 @@
 from __future__ import annotations
 
 import logging
-import tempfile
+from concurrent.futures import ThreadPoolExecutor, TimeoutError
 from pathlib import Path
+from functools import lru_cache
 
 from app.core.config import ExtractPipelineConfig
 from app.ingestion.extraction_result import (
@@ -28,9 +29,22 @@ from app.pipeline.completeness import (
 
 logger = logging.getLogger(__name__)
 
+@lru_cache(maxsize=1)
+def _rapidocr_engine(factory: object | None = None, model_path: str | None = None) -> object:
+    """Create RapidOCR once per worker process instead of per upload."""
+    if factory is None:
+        from rapidocr_onnxruntime import RapidOCR
 
-def _pdf_to_numpy(pdf_path: Path) -> "np.ndarray | None":
-    """Render the first page of a PDF to a numpy RGB array.
+        factory = RapidOCR
+    # The packaged RapidOCR models are the safe default.  The project setting
+    # is an override, but the scaffold's default path may not exist in a
+    # fresh checkout where the package models are installed.
+    kwargs = {"rec_model_path": model_path} if model_path and Path(model_path).is_file() else {}
+    return factory(**kwargs)
+
+
+def _pdf_to_numpy(pdf_path: Path) -> "list[np.ndarray] | None":
+    """Render every page of a PDF to numpy RGB arrays.
 
     Returns the numpy array on success, or None if the PDF
     cannot be rendered with the available tooling.
@@ -50,11 +64,13 @@ def _pdf_to_numpy(pdf_path: Path) -> "np.ndarray | None":
         pdf = pdfium.PdfDocument(str(pdf_path))
         if len(pdf) == 0:
             return None
-        pil_img = pdf[0].render(scale=1).to_pil()
-        arr = np.array(pil_img.convert("RGB"))
+        arrays = [
+            np.array(pdf[index].render(scale=1).to_pil().convert("RGB"))
+            for index in range(len(pdf))
+        ]
     except Exception:
         return None
-    return arr
+    return arrays or None
 
 
 def _coerce_record(
@@ -122,16 +138,14 @@ def extract_with_rapidocr(
         )
 
     image_array: "np.ndarray | None" = None
-    tmp_image: Path | None = None
-
     if document_path.suffix.lower() == ".pdf":
-        arr = _pdf_to_numpy(document_path)
-        if arr is None:
+        rendered = _pdf_to_numpy(document_path)
+        if rendered is None:
             return _failure(
                 source_msg="PDF requires rasterization for RapidOCR; install pypdfium2",
                 error_code=ERR_RAPIDOCR_UNREACHABLE,
             )
-        image_array = arr
+        image_array = rendered
     else:
         try:
             import numpy as np
@@ -158,16 +172,27 @@ def extract_with_rapidocr(
 
     try:
         from rapidocr_onnxruntime import RapidOCR
-    except ImportError as exc:
+
+        engine = _rapidocr_engine(RapidOCR, config.rapidocr_model_path)
+    except (ImportError, OSError, ValueError) as exc:
         return _failure(
             source_msg=f"RapidOCR engine not importable: {exc}",
             error_code=ERR_RAPIDOCR_UNREACHABLE,
         )
 
+    executor = ThreadPoolExecutor(max_workers=1)
+    future = executor.submit(_ocr_pages, engine, image_array)
     try:
-        engine = RapidOCR()
-        result = engine(image_array)
+        result = future.result(timeout=config.rapidocr_timeout_seconds)
+    except TimeoutError:
+        future.cancel()
+        executor.shutdown(wait=False, cancel_futures=True)
+        return _failure(
+            source_msg="RapidOCR timed out",
+            error_code=ERR_RAPIDOCR_UNREACHABLE,
+        )
     except Exception as exc:
+        executor.shutdown(wait=False, cancel_futures=True)
         logger.warning("RapidOCR engine error: %s", exc)
         return ExtractionResult(
             record=None,
@@ -176,6 +201,8 @@ def extract_with_rapidocr(
             flags=(flag_rapidocr_unreachable(), flag_rapidocr_fallback()),
             erreur_traitement=ERR_RAPIDOCR_UNREACHABLE,
         )
+    else:
+        executor.shutdown(wait=True)
 
     if result[0] is None:
         return _failure(
@@ -184,7 +211,12 @@ def extract_with_rapidocr(
         )
 
     det_lines = result[0]
-    confidences = [line[2] for line in det_lines if isinstance(line[2], (int, float))]
+    confidences: list[float] = []
+    for line in det_lines:
+        try:
+            confidences.append(float(line[2]))
+        except (IndexError, TypeError, ValueError):
+            continue
     doc_confidence = (
         sum(confidences) / len(confidences) if confidences else 0.0
     )
@@ -214,3 +246,17 @@ def extract_with_rapidocr(
         source="rapidocr",
         flags=(flag_rapidocr_fallback(),),
     )
+
+
+def _ocr_pages(engine: object, images: "list[object] | object") -> tuple[list[list[object]] | None, object]:
+    pages = images if isinstance(images, list) else [images]
+    all_lines: list[list[object]] = []
+    elapsed: list[object] = []
+    for image in pages:
+        page_result = engine(image)
+        if not page_result or page_result[0] is None:
+            continue
+        all_lines.extend(page_result[0])
+        if len(page_result) > 1:
+            elapsed.append(page_result[1])
+    return (all_lines or None, elapsed)

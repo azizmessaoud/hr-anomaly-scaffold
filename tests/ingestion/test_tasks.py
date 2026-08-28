@@ -62,6 +62,7 @@ def _docling_result(
         date_embauche="2020-01-01",
         salaire_brut=1000.0,
         confiance=confidence,
+        statut_employe="actif",
         statut=statut,
     )
     if missing:
@@ -361,6 +362,7 @@ def test_validate_record_keeps_green_when_record_is_well_formed():
         date_embauche="2020-01-01",
         salaire_brut=1000.0,
         confiance=0.95,
+        statut_employe="actif",
         statut=RecStatus.GREEN,
     )
     stage = _stage_from_record_dict(record, statut=RecStatus.GREEN)
@@ -368,6 +370,53 @@ def test_validate_record_keeps_green_when_record_is_well_formed():
 
     assert result.statut == RecStatus.GREEN
     assert result.terminal is False
+
+
+def test_validate_record_normalizes_authoritative_identity_and_status():
+    record = HRRecord(
+        id="wrong-id",
+        revision=0,
+        nom="A",
+        cin="AB123456",
+        cnss="123456789",
+        date_embauche="2020-01-01",
+        salaire_brut=1000.0,
+        confiance=0.95,
+        statut=RecStatus.GREEN,
+    )
+    stage = _stage_from_record_dict(
+        record,
+        doc_id="authoritative-id",
+        revision=7,
+        statut=RecStatus.AMBER,
+    )
+    result = validate_record(stage)  # type: ignore[arg-type]
+    assert result.record is not None
+    assert result.record["id"] == "authoritative-id"
+    assert result.record["revision"] == 7
+    assert result.record["statut"] == RecStatus.AMBER
+
+
+def test_validate_record_marks_missing_payroll_values_for_review():
+    record = HRRecord(
+        id="doc-x",
+        revision=INITIAL_REVISION,
+        nom="A",
+        cin=None,
+        cnss="123456789",
+        date_embauche="2020-01-01",
+        salaire_brut=1000.0,
+        confiance=0.95,
+        statut_employe="actif",
+        statut=RecStatus.GREEN,
+    )
+    stage = _stage_from_record_dict(record, statut=RecStatus.GREEN)
+
+    result = validate_record(stage)  # type: ignore[arg-type]
+
+    assert result.statut == RecStatus.RED
+    assert result.terminal is False
+    assert any(item["rule_id"] == "REQUIRED_VALUE_MISSING" for item in result.anomaly_results)
 
 
 def test_pipeline_runs_advisory_anomaly_detection_after_validation(fake_document: Path):
@@ -423,6 +472,25 @@ def test_validate_record_bad_payload_returns_red():
     assert result.statut == RecStatus.RED
     assert result.erreur_traitement is not None
     assert result.erreur_traitement.startswith("validation_failed:")
+
+
+def test_validate_record_validation_error_is_red():
+    record = HRRecord(
+        id="doc-x",
+        revision=INITIAL_REVISION,
+        nom="A",
+        cin="AB123456",
+        cnss="123456789",
+        date_embauche="2020-01-01",
+        salaire_brut=1000.0,
+        date_sortie="2019-01-01",
+        confiance=0.95,
+        statut=RecStatus.GREEN,
+    )
+    result = validate_record(_stage_from_record_dict(record, statut=RecStatus.GREEN))  # type: ignore[arg-type]
+
+    assert result.statut == RecStatus.RED
+    assert any(item["rule_id"] == "DATE_ORDER_INVALID" for item in result.anomaly_results)
 
 
 # ---------------------------------------------------------------------------
