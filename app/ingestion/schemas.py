@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import re
+import math
 from enum import StrEnum
 from typing import Optional
 
@@ -78,4 +79,11 @@ class HRRecord(BaseModel):
             return v
         if v <= 0:
             raise ValueError("salaire_brut must be greater than zero")
+        return v
+
+    @field_validator("salaire_brut", "heures_hebdomadaires", "confiance")
+    @classmethod
+    def validate_finite_numbers(cls, v: float | None) -> float | None:
+        if v is not None and not math.isfinite(v):
+            raise ValueError("numeric values must be finite")
         return v

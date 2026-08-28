@@ -215,6 +215,21 @@ def test_normal_salary_no_anomaly_flag():
     assert store.size(("IT",)) == 11
 
 
+def test_default_detectors_are_ready_to_score():
+    """The production detector path must use initialized detector objects."""
+    store = CohortBaselineStore()
+    for value in [4000, 4200, 4100, 4300, 4400, 4500, 4600, 4700, 4800, 4900]:
+        store.add(("IT",), value)
+
+    result = detect_anomalies(_make_stage(salaire_brut=4500.0), baseline_store=store)
+
+    assert not any(flag.startswith("anomaly_detector_failed:") for flag in result.flags)
+    assert {item["detector"] for item in result.anomaly_results} >= {
+        "isolation_forest",
+        "ecod",
+    }
+
+
 # ---------------------------------------------------------------------------
 # RecStatus never mutated
 # ---------------------------------------------------------------------------
