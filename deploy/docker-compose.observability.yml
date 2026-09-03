@@ -1,0 +1,47 @@
+# Full local stack: API + observability sidecars.
+# `docker compose up` gives you traces (Tempo), metrics (Prometheus),
+# dashboards (Grafana), and logs (Loki) alongside the pipeline API --
+# all free, all self-hosted, no cloud account required.
+version: "3.9"
+services:
+  api:
+    build:
+      context: ..
+      dockerfile: deploy/Dockerfile
+    ports: ["8000:7860"]
+    environment:
+      - PORT=7860
+      - OTEL_EXPORTER_OTLP_ENDPOINT=http://otel-collector:4317
+    depends_on: [otel-collector]
+
+  otel-collector:
+    image: otel/opentelemetry-collector-contrib:0.112.0
+    command: ["--config=/etc/otel-collector-config.yaml"]
+    volumes:
+      - ../observability/otel-collector-config.yaml:/etc/otel-collector-config.yaml
+    ports: ["4317:4317", "8889:8889"]
+
+  tempo:
+    image: grafana/tempo:2.6.0
+    command: ["-config.file=/etc/tempo.yaml"]
+    volumes: ["./tempo.yaml:/etc/tempo.yaml"]
+    ports: ["3200:3200"]
+
+  prometheus:
+    image: prom/prometheus:v2.55.0
+    volumes:
+      - ../observability/prometheus/prometheus.yml:/etc/prometheus/prometheus.yml
+    ports: ["9090:9090"]
+
+  loki:
+    image: grafana/loki:3.1.0
+    ports: ["3100:3100"]
+
+  grafana:
+    image: grafana/grafana:11.2.0
+    ports: ["3000:3000"]
+    environment:
+      - GF_SECURITY_ADMIN_PASSWORD=admin
+    volumes:
+      - ../observability/grafana/dashboards:/var/lib/grafana/dashboards
+    depends_on: [prometheus, tempo, loki]
