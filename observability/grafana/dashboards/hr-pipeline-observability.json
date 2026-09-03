@@ -1,0 +1,50 @@
+{
+  "title": "HR Anomaly Pipeline - Extraction Observability",
+  "panels": [
+    {
+      "title": "Stage duration p95 (s)",
+      "type": "timeseries",
+      "targets": [
+        {
+          "expr": "histogram_quantile(0.95, sum(rate(hr_pipeline_stage_duration_seconds_bucket[5m])) by (stage, le))"
+        }
+      ]
+    },
+    {
+      "title": "Stage outcomes rate",
+      "type": "timeseries",
+      "targets": [
+        {
+          "expr": "sum(rate(hr_pipeline_stage_events_total[5m])) by (stage, outcome)"
+        }
+      ]
+    },
+    {
+      "title": "RapidOCR fallback rescue rate",
+      "type": "stat",
+      "targets": [
+        {
+          "expr": "sum(rate(hr_pipeline_ocr_fallback_total{result=\"rescued\"}[1h])) / sum(rate(hr_pipeline_ocr_fallback_total[1h]))"
+        }
+      ]
+    },
+    {
+      "title": "Documents processed by final status",
+      "type": "piechart",
+      "targets": [
+        {
+          "expr": "sum(increase(hr_pipeline_documents_processed_total[24h])) by (status)"
+        }
+      ]
+    },
+    {
+      "title": "Anomaly flags by detector/severity",
+      "type": "bargauge",
+      "targets": [
+        {
+          "expr": "sum(increase(hr_pipeline_anomaly_flags_total[24h])) by (detector, severity)"
+        }
+      ]
+    }
+  ]
+}
